@@ -1,6 +1,7 @@
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # Required imports
 
+import pandas as pd
 from utils.notebookhelpers.helpers import Helpers
 from utils.dtos.templateOutputCollection import TemplateOutputCollection
 from utils.dtos.templateOutput import TemplateOutput
@@ -16,7 +17,6 @@ from utils.libutils.vectorStores.utils import VectorStoreUtils
 context = Helpers.getOrCreateContext(contextId='contextId', localVars=locals())
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-import pandas as pd
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # Your code goes here
@@ -55,10 +55,20 @@ df_sem_match = pd.concat([
 df_sem_match = df_sem_match.drop_duplicates().reset_index(drop=True)
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-remover_motivos = ['Component não começa com T seguido de dígitos', 'Component com dois . em seu nome',
-                   'Linha de rodape/invalida']
-df_sem_match = df_sem_match[~df_sem_match['motivo'].isin(remover_motivos)]           
-# df_sem_match[df_sem_match['motivo'].str.startswith('T')]
+remover_motivos = [
+    'Component não começa com T seguido de dígitos',
+    'Linha de rodape/invalida',
+    'Nao utiliza componentes importados (T)',
+    'Produto nao utiliza componentes importados (T)',
+    'Curva D (Baixa relevancia/Sem venda)',
+    'Custo do produto igual a 0.0',
+    'Previsao de venda zerada ou negativa (QTDE_PEDIDA <= 0)',
+    'Component com dois . em seu nome'
+]
+df_sem_match = df_sem_match[~df_sem_match['motivo'].isin(remover_motivos)]
+df_sem_match = df_sem_match[df_sem_match['component'].str.startswith(
+    'T', na=False)]
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-Helpers.save_output_dataset(context=context, output_name='df_sem_match', data_frame=df_sem_match)
+Helpers.save_output_dataset(
+    context=context, output_name='df_sem_match', data_frame=df_sem_match)
