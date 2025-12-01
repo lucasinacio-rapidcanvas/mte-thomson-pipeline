@@ -1,31 +1,31 @@
 index,component,origem,motivo
-39810,R3000,portal_vendas (script: New 01 Process ABCXYZ),Nao utiliza componentes importados (T)
-39811,R3005,portal_vendas (script: New 01 Process ABCXYZ),Nao utiliza componentes importados (T)
-39812,R3018,portal_vendas (script: New 01 Process ABCXYZ),Nao utiliza componentes importados (T)
-39813,R3029,portal_vendas (script: New 01 Process ABCXYZ),Nao utiliza componentes importados (T)
-39814,R3041,portal_vendas (script: New 01 Process ABCXYZ),Nao utiliza componentes importados (T)
-39815,R3042,portal_vendas (script: New 01 Process ABCXYZ),Nao utiliza componentes importados (T)
-39816,R3046,portal_vendas (script: New 01 Process ABCXYZ),Nao utiliza componentes importados (T)
-39817,R3050,portal_vendas (script: New 01 Process ABCXYZ),Nao utiliza componentes importados (T)
-39818,R3060,portal_vendas (script: New 01 Process ABCXYZ),Nao utiliza componentes importados (T)
-39819,R3088,portal_vendas (script: New 01 Process ABCXYZ),Nao utiliza componentes importados (T)
-39820,R3171,portal_vendas (script: New 01 Process ABCXYZ),Nao utiliza componentes importados (T)
-39821,R4000,portal_vendas (script: New 01 Process ABCXYZ),Nao utiliza componentes importados (T)
-39822,R4005,portal_vendas (script: New 01 Process ABCXYZ),Nao utiliza componentes importados (T)
-39823,R4008,portal_vendas (script: New 01 Process ABCXYZ),Nao utiliza componentes importados (T)
-39824,R4014,portal_vendas (script: New 01 Process ABCXYZ),Nao utiliza componentes importados (T)
-39825,R4020,portal_vendas (script: New 01 Process ABCXYZ),Nao utiliza componentes importados (T)
-39826,R4027,portal_vendas (script: New 01 Process ABCXYZ),Nao utiliza componentes importados (T)
-39827,R4034,portal_vendas (script: New 01 Process ABCXYZ),Nao utiliza componentes importados (T)
-39828,R4037,portal_vendas (script: New 01 Process ABCXYZ),Nao utiliza componentes importados (T)
-39829,R4039,portal_vendas (script: New 01 Process ABCXYZ),Nao utiliza componentes importados (T)
-39830,R4046,portal_vendas (script: New 01 Process ABCXYZ),Nao utiliza componentes importados (T)
-39831,R4050,portal_vendas (script: New 01 Process ABCXYZ),Nao utiliza componentes importados (T)
-39832,R4051,portal_vendas (script: New 01 Process ABCXYZ),Nao utiliza componentes importados (T)
-39833,R4053,portal_vendas (script: New 01 Process ABCXYZ),Nao utiliza componentes importados (T)
-39834,R4056,portal_vendas (script: New 01 Process ABCXYZ),Nao utiliza componentes importados (T)
-39835,R4058,portal_vendas (script: New 01 Process ABCXYZ),Nao utiliza componentes importados (T)
-39836,R4067,portal_vendas (script: New 01 Process ABCXYZ),Nao utiliza componentes importados (T)
-39837,R4076,portal_vendas (script: New 01 Process ABCXYZ),Nao utiliza componentes importados (T)
-39838,R4079,portal_vendas (script: New 01 Process ABCXYZ),Nao utiliza componentes importados (T)
-39839,R4092,portal_vendas (script: New 01 Process ABCXYZ),Nao utiliza componentes importados (T)
+67469,T036L,df_produto_fornecedor,Sem correspondencia em produto_fornecedor_ativo
+67470,T0911,df_produto_fornecedor,Sem correspondencia em produto_fornecedor_ativo
+67471,T0911L,df_produto_fornecedor,Sem correspondencia em produto_fornecedor_ativo
+67472,T0912L,df_produto_fornecedor,Sem correspondencia em produto_fornecedor_ativo
+67473,T0913L,df_produto_fornecedor,Sem correspondencia em produto_fornecedor_ativo
+67474,T0914L,df_produto_fornecedor,Sem correspondencia em produto_fornecedor_ativo
+67475,T0922,df_produto_fornecedor,Sem correspondencia em produto_fornecedor_ativo
+67476,T0922L,df_produto_fornecedor,Sem correspondencia em produto_fornecedor_ativo
+67477,T0923,df_produto_fornecedor,Sem correspondencia em produto_fornecedor_ativo
+67478,T0924,df_produto_fornecedor,Sem correspondencia em produto_fornecedor_ativo
+67479,T0925,df_produto_fornecedor,Sem correspondencia em produto_fornecedor_ativo
+67480,T0926,df_produto_fornecedor,Sem correspondencia em produto_fornecedor_ativo
+67481,T0927,df_produto_fornecedor,Sem correspondencia em produto_fornecedor_ativo
+67482,T0928L,df_produto_fornecedor,Sem correspondencia em produto_fornecedor_ativo
+67483,T0929,df_produto_fornecedor,Sem correspondencia em produto_fornecedor_ativo
+67484,T0930L,df_produto_fornecedor,Sem correspondencia em produto_fornecedor_ativo
+67485,T0931,df_produto_fornecedor,Sem correspondencia em produto_fornecedor_ativo
+67486,T0933L,df_produto_fornecedor,Sem correspondencia em produto_fornecedor_ativo
+67487,T0934L,df_produto_fornecedor,Sem correspondencia em produto_fornecedor_ativo
+67488,T0935L,df_produto_fornecedor,Sem correspondencia em produto_fornecedor_ativo
+67489,T293.82,df_produto_fornecedor,Sem correspondencia em produto_fornecedor_ativo
+67490,T3128,df_produto_fornecedor,Sem correspondencia em produto_fornecedor_ativo
+67491,T3133,df_produto_fornecedor,Sem correspondencia em produto_fornecedor_ativo
+67492,T3142,df_produto_fornecedor,Sem correspondencia em produto_fornecedor_ativo
+67493,T3150,df_produto_fornecedor,Sem correspondencia em produto_fornecedor_ativo
+67494,T3151,df_produto_fornecedor,Sem correspondencia em produto_fornecedor_ativo
+67495,T3168,df_produto_fornecedor,Sem correspondencia em produto_fornecedor_ativo
+67496,T3170,df_produto_fornecedor,Sem correspondencia em produto_fornecedor_ativo
+67497,T3171,df_produto_fornecedor,Sem correspondencia em produto_fornecedor_ativo
+67498,T3173,df_produto_fornecedor,Sem correspondencia em produto_fornecedor_ativo
