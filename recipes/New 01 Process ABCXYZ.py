@@ -1402,4 +1402,3 @@ print(f"\n💾 OUTPUTS GERADOS:")
 print(f"   ✅ new_multihorizon_products_abcxyz")
 print(f"   ✅ new_multihorizon_components_abcxyz")
 print("="*80)
-
