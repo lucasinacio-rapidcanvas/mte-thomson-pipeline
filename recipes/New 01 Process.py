@@ -1513,6 +1513,9 @@ df_sem_match = df_sem_match[['Cod_component', 'origem', 'motivo']]
 Helpers.save_output_dataset(context=context, output_name='df_sem_match_atual_3', data_frame=df_sem_match)
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
+df_sem_match
+
+# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # Split treino/teste
 print("\n" + "="*80)
 print("📊 PARTICIONAMENTO TREINO/TESTE (ALEATÓRIO TEMPORAL)")
@@ -2375,11 +2378,6 @@ print("\n    ✅ monthly_analysis_components_comparative_mm12 salvo")
 
 print("\n" + "="*80)
 
-# Preparar datas base para previsão recursiva
-base_dates = [df_portalvendas_preprocessing[DATA_PEDIDO].max() - pd.tseries.offsets.DateOffset(months=i) - pd.offsets.MonthBegin() for i in range(0, 1)] #mudar 1 para 23
-
-print(f"Datas base para previsão: {base_dates}")
-
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # ==================================================================================
 # FUNÇÃO: recursive_prediction (Ajustada)
@@ -2496,10 +2494,16 @@ def recursive_prediction(df_in, model, n_months, base_month, df_datas_reajustes,
     return df_out
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
+# Preparar datas base para previsão recursiva
+base_dates = [df_portalvendas_preprocessing[DATA_PEDIDO].max() - pd.tseries.offsets.DateOffset(months=i) - pd.offsets.MonthBegin() for i in range(0, 12)]
+
+print(f"Datas base para previsão: {base_dates}")
+
+# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # ============================================================================
 # PREVISÃO RECURSIVA MULTI-HORIZONTE USANDO MODELOS ABC-XGBOOST
 # ============================================================================
-n_horizons = 12
+n_horizons = 2
 df_multi_horizon_pred = pd.DataFrame()
 df_multi_horizon_pred_component = pd.DataFrame()
 
@@ -2510,10 +2514,10 @@ print("="*80 + "\n")
 for base_date in base_dates:
     print(f"📅 Predicting for base date: {base_date}")
     
-    # USAR ensemble_model
+    # USAR ensemble_model (que agora contém os modelos ABC)
     multi_horizon_pred = recursive_prediction(
         df_portalvendas_preprocessing, 
-        ensemble_model,
+        ensemble_model,  # ← Contém os modelos ABC
         n_horizons, 
         base_date, 
         df_datas_reajustes, 
