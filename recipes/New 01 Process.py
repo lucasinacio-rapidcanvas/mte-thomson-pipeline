@@ -12,7 +12,7 @@ from utils.dtos.rc_ml_model import RCMLModel
 from utils.notebookhelpers.helpers import Helpers
 from utils.libutils.vectorStores.utils import VectorStoreUtils
 
-context = Helpers.getOrCreateContext(contextId='contextId', localVars=locals())
+context = Helpers.getOrCreateContext(contextId='contextId', localVars=locals()) 
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # Importações padrão
@@ -578,23 +578,9 @@ COD_MTE_COMP = "COD_MTE_COMP"
 CODIGO_MTE_ORIG_EXP = "CODIGO_MTE_ORIG_EXP"
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Inicializa a lista de auditoria
-lista_dfs_sem_match = []
-
-# Preparação dos dados (mantida do original com auditoria)
-# 1. FILTRO RODAPÉ
-# Captura a linha que será removida
-row_tail = df_portalvendas.tail(1).copy()
-row_tail['motivo'] = 'Linha de rodape/invalida'
-# Normaliza nome da coluna para auditoria
-row_tail_audit = row_tail[[COD_MTE_COMP]].rename(columns={COD_MTE_COMP: 'Cod_component'})
-row_tail_audit['motivo'] = 'Linha de rodape/invalida'
-lista_dfs_sem_match.append(row_tail_audit)
-
-# Aplica remoção
+# Preparação dos dados (mantida do original)
 df_portalvendas = df_portalvendas.drop(df_portalvendas.tail(1).index)
 
-# Sanitização de colunas
 df_portalvendas.columns = (
     df_portalvendas.columns.str.replace(" ", "_")
     .str.replace("._", "_", regex=False)
@@ -629,23 +615,12 @@ for col in ['QTDE_PEDIDA', 'QTDE_ENTREGUE', 'QTDE_SALDO']:
 
 print("✅ Data types converted successfully!")
 
-# 2. FILTRO JANELA TEMPORAL
-filter_last_2years = False
+filter_last_2years = True
 if filter_last_2years:
     last_date = pd.to_datetime(pd.Timestamp.now().date())
     last_date_first_day_of_month = pd.Timestamp(f"{last_date.year}-{last_date.month:02d}-01")
     start_date = last_date_first_day_of_month - pd.DateOffset(years=2)
-    
-    # Auditoria
-    mask_time_out = (df_portalvendas[DATA_PEDIDO] < start_date) | (df_portalvendas[DATA_PEDIDO] >= last_date_first_day_of_month)
-    if mask_time_out.sum() > 0:
-        df_removed_time = df_portalvendas[mask_time_out].copy()
-        df_audit_time = df_removed_time[[COD_MTE_COMP]].rename(columns={COD_MTE_COMP: 'Cod_component'})
-        df_audit_time['motivo'] = 'Fora da Janela Temporal (Historico antigo ou mes atual)'
-        lista_dfs_sem_match.append(df_audit_time)
-    
-    # Aplica filtro
-    df_portalvendas = df_portalvendas[~mask_time_out]
+    df_portalvendas = df_portalvendas[(df_portalvendas[DATA_PEDIDO] >= start_date) & (df_portalvendas[DATA_PEDIDO] < last_date_first_day_of_month)]
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # Identificar componentes importados
@@ -1353,8 +1328,10 @@ def count_working_days_in_month(year, month):
     mte_recess_2021_2022 = pd.date_range("2021-12-24", "2022-01-02").to_pydatetime().tolist()
     mte_recess_2022_2023 = pd.date_range("2022-12-24", "2023-01-01").to_pydatetime().tolist()
     mte_recess_2023_2024 = pd.date_range("2023-12-24", "2024-01-01").to_pydatetime().tolist()
-    
-    remove_dates =  holids + mte_recess_2019_2020 + mte_recess_2020_2021 + mte_recess_2021_2022 + mte_recess_2022_2023 + mte_recess_2023_2024
+    mte_recess_2024_2025 = pd.date_range("2024-12-24", "2025-01-01").to_pydatetime().tolist()
+    mte_recess_2025_2026 = pd.date_range("2025-12-24", "2026-01-01").to_pydatetime().tolist()
+
+    remove_dates =  holids + mte_recess_2019_2020 + mte_recess_2020_2021 + mte_recess_2021_2022 + mte_recess_2022_2023 + mte_recess_2023_2024 + mte_recess_2024_2025 + mte_recess_2025_2026
 
     dates = [date for date in dates if date not in remove_dates]
 
@@ -1445,17 +1422,10 @@ def pipeline(df, df_datas_reajustes, df_produtos, _drop_na=True):
     return df_processed
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# 3. FILTRO COMPONENTES IMPORTADOS
-mask_not_imported = ~df_portalvendas[COD_MTE_COMP].isin(set_products_use_imported)
-
-if mask_not_imported.sum() > 0:
-    df_removed_imp = df_portalvendas[mask_not_imported].copy()
-    df_audit_imp = df_removed_imp[[COD_MTE_COMP]].rename(columns={COD_MTE_COMP: 'Cod_component'})
-    df_audit_imp['motivo'] = 'Produto nao utiliza componentes importados (T)'
-    lista_dfs_sem_match.append(df_audit_imp)
-
 # Filtrar e preparar dados
-df_portalvendas_filtered = df_portalvendas[~mask_not_imported].copy()
+df_portalvendas_filtered = df_portalvendas[
+    df_portalvendas[COD_MTE_COMP].isin(set_products_use_imported)
+]
 
 df_portalvendas_filtered = refresh_categories(
     df_portalvendas_filtered, COD_MTE_COMP
@@ -1477,43 +1447,8 @@ print(f"Período: {df_processed[_next_month].min()} até {df_processed[_next_mon
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # Removendo itens sem venda
-# 4. FILTRO CURVA D (Sem Venda/Baixa relevância)
-# Executar pipeline de processamento (mantido igual)
-df_processed = pipeline(df_portalvendas_preprocessing, df_datas_reajustes, df_produtos)
-
-print(f"DataFrame processado: {df_processed.shape}")
-print(f"Período: {df_processed[_next_month].min()} até {df_processed[_next_month].max()}")
-
-# Auditoria Curva D
-mask_curva_d = df_processed['CURVA_D'] == 1
-if mask_curva_d.sum() > 0:
-    df_removed_curva = df_processed[mask_curva_d].copy()
-    # Nota: df_processed tem COD_MTE_COMP
-    df_audit_curva = df_removed_curva[[COD_MTE_COMP]].rename(columns={COD_MTE_COMP: 'Cod_component'})
-    df_audit_curva['motivo'] = 'Curva D (Baixa relevancia/Sem venda)'
-    lista_dfs_sem_match.append(df_audit_curva)
-
-# Removendo itens sem venda
-df_processed = df_processed[~mask_curva_d]
+df_processed = df_processed[df_processed['CURVA_D']!=1]
 df_processed = df_processed.drop(columns=['CURVA_D'])
-
-# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# CONSOLIDAÇÃO DO DATAFRAME DE AUDITORIA (df_sem_match)
-
-if len(lista_dfs_sem_match) > 0:
-    df_sem_match = pd.concat(lista_dfs_sem_match, ignore_index=True)
-else:
-    df_sem_match = pd.DataFrame(columns=['Cod_component', 'motivo'])
-
-# Adicionar coluna de origem fixa
-df_sem_match['origem'] = 'portal_vendas (script: New 01 Process)'
-
-# Garantir a ordem das colunas solicitada
-df_sem_match = df_sem_match[['Cod_component', 'origem', 'motivo']]
-Helpers.save_output_dataset(context=context, output_name='df_sem_match_atual_3', data_frame=df_sem_match)
-
-# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-df_sem_match
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # Split treino/teste
@@ -2379,6 +2314,12 @@ print("\n    ✅ monthly_analysis_components_comparative_mm12 salvo")
 print("\n" + "="*80)
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
+# Preparar datas base para previsão recursiva
+base_dates = [df_portalvendas_preprocessing[DATA_PEDIDO].max() - pd.tseries.offsets.DateOffset(months=i) - pd.offsets.MonthBegin() for i in range(0, 1)][::-1]
+
+print(f"Datas base para previsão: {base_dates}")
+
+# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # ==================================================================================
 # FUNÇÃO: recursive_prediction (Ajustada)
 # Esta função chama 'predict_ensemble', que agora contém a lógica ABC.
@@ -2443,7 +2384,7 @@ def recursive_prediction(df_in, model, n_months, base_month, df_datas_reajustes,
         print(f"    📅 Prevendo mês {n_predicted_months + 1}/{n_months}: {current_month}")
         
         # Manter apenas últimos 12 meses de histórico
-        # df_out = df_out[df_out[_next_month] >= base_month - pd.tseries.offsets.MonthBegin(12)]
+        df_out = df_out[df_out[_next_month] >= base_month - pd.tseries.offsets.MonthBegin(12)]
         
         # Processar dados (criar features)
         df_processed = processing_fn(df_out, df_datas_reajustes, df_produtos, _drop_na=False)
@@ -2487,23 +2428,17 @@ def recursive_prediction(df_in, model, n_months, base_month, df_datas_reajustes,
         n_predicted_months += 1
     
     # Retornar apenas previsões (não histórico)
-    # df_out = df_out[df_out[_next_month] > base_month + pd.tseries.offsets.MonthBegin()]
+    df_out = df_out[df_out[_next_month] > base_month + pd.tseries.offsets.MonthBegin()]
     
     print(f"\n✅ Previsão recursiva concluída: {len(df_out)} registros gerados")
     
     return df_out
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Preparar datas base para previsão recursiva
-base_dates = [df_portalvendas_preprocessing[DATA_PEDIDO].max() - pd.tseries.offsets.DateOffset(months=i) - pd.offsets.MonthBegin() for i in range(0, 12)]
-
-print(f"Datas base para previsão: {base_dates}")
-
-# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # ============================================================================
 # PREVISÃO RECURSIVA MULTI-HORIZONTE USANDO MODELOS ABC-XGBOOST
 # ============================================================================
-n_horizons = 2
+n_horizons = 12
 df_multi_horizon_pred = pd.DataFrame()
 df_multi_horizon_pred_component = pd.DataFrame()
 
