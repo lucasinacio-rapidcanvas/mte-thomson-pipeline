@@ -188,7 +188,15 @@ df_excluidos_2B['origem'] = 'df_produto_fornecedor'
 df_excluidos_2B['Motivo'] = 'Component com dois . em seu nome'
 df_excluidos_2B = df_excluidos_2B.rename(columns={'PRODUTO': 'Cod_component'})
 
-df_excluidos_2 = pd.concat([df_excluidos_2A, df_excluidos_2B])
+# 3. Apenas produtos com preco maior que 0
+df_excluidos_2C = df_produto_fornecedor[df_produto_fornecedor['CUSTO_PRODUTO']<=0].rename(columns={'PRODUTO': 'Cod_component'})
+df_excluidos_2C['origem'] = 'df_produto_fornecedor'
+df_excluidos_2C['Motivo'] = 'Produto com custo 0'
+df_excluidos_2C = df_excluidos_2C[['Cod_component', 'origem', 'Motivo']]
+
+df_excluidos_2 = pd.concat([df_excluidos_2A, df_excluidos_2B, df_excluidos_2C])
+
+df_produto_fornecedor = df_produto_fornecedor[df_produto_fornecedor['CUSTO_PRODUTO']>0]
 
 # --- 1. Limpeza e Padronização de COD_FORNE e COD_FABRI ---
 df_produto_fornecedor["COD_FORNE"] = (
@@ -214,6 +222,7 @@ df_produto_fornecedor[string_cols] = df_produto_fornecedor[string_cols].astype("
 # 5. Conversão e arredondamento
 float_cols = ["CUSTO_PRODUTO", "PTAX"]
 df_produto_fornecedor[float_cols] = df_produto_fornecedor[float_cols].apply(pd.to_numeric, errors="coerce").round(2)
+
 
 Helpers.save_output_dataset(context=context, output_name='df_produto_fornecedor', data_frame=df_produto_fornecedor)
 
