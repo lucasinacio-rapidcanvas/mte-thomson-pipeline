@@ -53,15 +53,13 @@ context = Helpers.getOrCreateContext(contextId='endpoint_get_dataset_parquet', l
 
 # Carregar TODOS os datasets conectados ao nó
 datasets = {}
-for entity in Helpers.getAllEntities(context):
-    name = entity.get('name') or entity.get('displayName')
-    if name:
-        try:
-            df = Helpers.getEntityData(context, name)
-            datasets[name] = df
-            print(f"✓ {name}: {len(df):,} rows")
-        except Exception as e:
-            print(f"✗ {name}: {e}")
+for name in Helpers.getAllEntities(context):
+    try:
+        df = Helpers.getEntityData(context, name)
+        datasets[name] = df
+        print(f"✓ {name}: {len(df):,} rows")
+    except Exception as e:
+        print(f"✗ {name}: {e}")
 
 print(f"✓ Total: {len(datasets)} datasets")
 

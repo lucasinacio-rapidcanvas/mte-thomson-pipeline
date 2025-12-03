@@ -178,10 +178,6 @@ def create_component_consumption_dataframe(df,
                                            code_column="COD_MTE_COMP",
                                            period_column="_next_month",
                                            other_columns_to_keep=None):
-    """
-    Takes a dataframe with end product sales for each product and month, 
-    and returns a dataframe with the consumptions for each component for each month.
-    """
     if other_columns_to_keep is None:
         other_columns_to_keep = []
     
@@ -198,10 +194,16 @@ def create_component_consumption_dataframe(df,
     
     df_components = pd.concat(component_rows, axis=0)
     df_components = df_components.drop(columns=[sales_column])
-    df_components = df_components.groupby([period_column, "Component"] + other_columns_to_keep)[consumption_column].sum().reset_index()
+    
+    # MUDANÇA: Agregar TODAS as colunas numéricas
+    agg_dict = {consumption_column: 'sum'}
+    for col in other_columns_to_keep:
+        agg_dict[col] = 'sum'
+    
+    df_components = df_components.groupby([period_column, "Component"]).agg(agg_dict).reset_index()
     
     return df_components
-
+    
 def refresh_categories(df, column_name):
     df.loc[:, column_name] = df[column_name].cat.set_categories(df[column_name].cat.remove_unused_categories().unique())
     return df
@@ -875,10 +877,7 @@ def fill_all_missing_periods(df, date_column, product_column, selected_cols=None
     CORRIGIDA: Evita erro de broadcast (shapes mismatch) ao concatenar colunas.
     """
     
-    # -----------------------------------------------------------
-    # CORREÇÃO PRINCIPAL AQUI:
-    # Converter df.columns (Index) para lista Python explicitamente
-    # -----------------------------------------------------------
+    # CORREÇÃO: Converter df.columns para lista Python
     if selected_cols is None:
         selected_cols = df.columns.tolist() 
     else:
@@ -905,35 +904,28 @@ def fill_all_missing_periods(df, date_column, product_column, selected_cols=None
     # Aplicação do dicionário de preenchimento (fill_dict)
     if fill_dict:
         for value, col in fill_dict.items():
-            # Verifica se a coluna existe para evitar KeyError
             if col not in merged_df.columns:
                 continue
                 
             if value == "ffill":
-                # Usando groupby para não propagar valores entre produtos diferentes
                 merged_df[col] = merged_df.groupby(product_column)[col].ffill()
             elif value == "bfill":
                 merged_df[col] = merged_df.groupby(product_column)[col].bfill()
             else:
                 merged_df[col] = merged_df[col].fillna(value)
     
-    # Preencher colunas numéricas restantes com 0 (padrão do seu script)
+    # Preencher colunas numéricas restantes com 0
     non_categorical_cols = merged_df.select_dtypes(exclude=['category', 'object', 'datetime']).columns
     merged_df[non_categorical_cols] = merged_df[non_categorical_cols].fillna(0)
     
-    # -----------------------------------------------------------
     # DEFINIÇÃO SEGURA DAS COLUNAS FINAIS
-    # -----------------------------------------------------------
-    # Concatena listas puras
     full_cols_list = [product_column, date_column] + selected_cols
-    
-    # Remove duplicatas mantendo a ordem (caso product/date já estejam em selected_cols)
     cols = list(dict.fromkeys(full_cols_list))
-    
-    # Garante que só vamos pedir colunas que existem no dataframe final
     cols = [c for c in cols if c in merged_df.columns]
     
     return merged_df[cols].copy()
+ 
+    
 
 @log_step
 def create_features_from_price_raise_dates(df, df_raise_dates, date_col=None):
@@ -1505,35 +1497,6 @@ def group_by_aggregate(df, group_by, col_func_dict):
     df = df.groupby(group_by).aggregate(col_func_dict)
     df = df.reset_index()
     return df
-
-def fill_all_missing_periods(df, date_column, product_column, selected_cols=None, freq="D", fill_dict=None):
-    if not selected_cols:
-        selected_cols = df.columns
-    
-    min_date = df[date_column].min()
-    max_date = df[date_column].max()
-    date_range = pd.date_range(min_date, max_date, freq=freq)
-    product_codes = df[product_column].unique().tolist()
-    all_combinations = pd.MultiIndex.from_product([product_codes, date_range], names=[product_column, date_column])
-    new_df = pd.DataFrame(index=all_combinations).reset_index()
-    
-    merged_df = pd.merge(new_df, df, on=[product_column, date_column], how='left')
-    
-    if fill_dict:
-        for value, col in fill_dict.items():
-            if value == "ffill":
-                merged_df[col] = merged_df.groupby(product_column)[col].fillna(method="ffill")
-            elif value == "bfill":
-                merged_df[col] = merged_df.groupby(product_column)[col].fillna(method="bfill")
-            else:
-                merged_df[col] = merged_df[col].fillna(value)
-    
-    non_categorical_cols = merged_df.select_dtypes(exclude=['category']).columns
-    merged_df[non_categorical_cols] = merged_df[non_categorical_cols].fillna(0)
-    
-    cols = [product_column, date_column] + selected_cols
-    
-    return merged_df[cols].copy()
 
 def get_daily_portalvendas(df_portalvendas):
     df_daily_portalvendas = df_portalvendas.copy()
@@ -2641,7 +2604,7 @@ def recursive_prediction(df_in, model, n_months, base_month, df_datas_reajustes,
 # ============================================================================
 # PREVISÃO RECURSIVA MULTI-HORIZONTE USANDO MODELOS ABC-XGBOOST
 # ============================================================================
-n_horizons = 6
+n_horizons = 3
 df_multi_horizon_pred = pd.DataFrame()
 df_multi_horizon_pred_component = pd.DataFrame()
 
@@ -2706,3 +2669,4 @@ Helpers.save_output_dataset(context=context, output_name="new_daily_portalvendas
 Helpers.save_output_dataset(context=context, output_name="new_monthly_portalvendas", data_frame=df_monthly_portalvendas)
 
 print("✅ Todos os datasets foram salvos.")
+
