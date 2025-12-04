@@ -2604,7 +2604,7 @@ def recursive_prediction(df_in, model, n_months, base_month, df_datas_reajustes,
 # ============================================================================
 # PREVISÃO RECURSIVA MULTI-HORIZONTE USANDO MODELOS ABC-XGBOOST
 # ============================================================================
-n_horizons = 3
+n_horizons = 12
 df_multi_horizon_pred = pd.DataFrame()
 df_multi_horizon_pred_component = pd.DataFrame()
 
@@ -2669,4 +2669,3 @@ Helpers.save_output_dataset(context=context, output_name="new_daily_portalvendas
 Helpers.save_output_dataset(context=context, output_name="new_monthly_portalvendas", data_frame=df_monthly_portalvendas)
 
 print("✅ Todos os datasets foram salvos.")
-

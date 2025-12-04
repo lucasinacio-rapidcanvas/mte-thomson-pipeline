@@ -1,3 +1,20 @@
+# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
+# Required imports
+
+from utils.notebookhelpers.helpers import Helpers
+from utils.dtos.templateOutputCollection import TemplateOutputCollection
+from utils.dtos.templateOutput import TemplateOutput
+from utils.dtos.templateOutput import OutputType
+from utils.dtos.templateOutput import ChartType
+from utils.dtos.variable import Metadata
+from utils.rcclient.commons.variable_datatype import VariableDatatype
+from utils.dtos.templateOutput import FileType
+from utils.dtos.rc_ml_model import RCMLModel
+from utils.libutils.vectorStores.utils import VectorStoreUtils
+
+context = Helpers.getOrCreateContext(contextId='contextId', localVars=locals())
+
+# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # ================================================================================
 # RECIPE UNIFICADO: prepare_product_view_data
 # ================================================================================
@@ -18,28 +35,17 @@
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # 1. SETUP E IMPORTS GERAIS
 # --------------------------------------------------------------------------------
-from utils.notebookhelpers.helpers import Helpers
-from utils.dtos.templateOutputCollection import TemplateOutputCollection
-from utils.dtos.templateOutput import TemplateOutput
-from utils.dtos.templateOutput import OutputType
-from utils.dtos.templateOutput import ChartType
-from utils.dtos.variable import Metadata
-from utils.rcclient.commons.variable_datatype import VariableDatatype
-from utils.dtos.templateOutput import FileType
-from utils.dtos.rc_ml_model import RCMLModel
-from utils.libutils.vectorStores.utils import VectorStoreUtils
+
 import pandas as pd
 import numpy as np
-
-context = Helpers.getOrCreateContext(contextId='contextId', localVars=locals())
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # 2. CARREGAMENTO DE TODOS OS INPUTS (INGESTÃO CENTRALIZADA)
 # --------------------------------------------------------------------------------
 # Inputs Bloco 1 (Forecast Comp)
-df_forecast_comp_raw = Helpers.getEntityData(context, 'new_multihorizon_components')
+df_new_multihorizon_components = Helpers.getEntityData(context, 'new_multihorizon_components')
 df_produtos = Helpers.getEntityData(context, 'produtos')
-df_fornecedores = Helpers.getEntityData(context, 'df_produto_fornecedor')
+df_produto_fornecedor = Helpers.getEntityData(context, 'df_produto_fornecedor')
 
 # Inputs Bloco 2 (Histórico)
 df_history_raw = Helpers.getEntityData(context, 'new_monthly_portalvendas_components')
@@ -48,12 +54,12 @@ df_history_raw = Helpers.getEntityData(context, 'new_monthly_portalvendas_compon
 df_forecast_prod_raw = Helpers.getEntityData(context, 'new_multihorizon_products_abcxyz')
 df_estrutura = Helpers.getEntityData(context, 'df_estrutura_produto')
 
-
+# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # ================================================================================
 # BLOCO 1: FORECAST DE COMPONENTES (ENRIQUECIMENTO)
 # ================================================================================
 # 1.1 Merge com produtos
-df_fc_enriched = df_forecast_comp_raw.merge(
+df_fc_enriched = df_new_multihorizon_components.merge(
     df_produtos[[
         "B1_COD", "B1_DESC", "B1_GRUPO", "NOM_GRUP", "ORIGEM", "CURVA",
         "PRECO_VENDA_BRL", "PRECO_VENDA_USD", "PRECO_VENDA_EUR",
@@ -66,7 +72,7 @@ df_fc_enriched = df_forecast_comp_raw.merge(
 
 # 1.2 Merge com fornecedor
 df_fc_enriched = df_fc_enriched.merge(
-    df_fornecedores[[
+    df_produto_fornecedor[[
         "PRODUTO", "COD_FORNE", "FORNEC_NOM", "COD_FABRI", "MOEDA", "CUSTO_PRODUTO"
     ]],
     left_on="Component",
@@ -109,7 +115,7 @@ for col in categ_cols_1:
 # 1.6 Output Final Bloco 1
 df_output_1 = df_fc_enriched.sort_values(["Component", "base_date", "DATA_PEDIDO"], ignore_index=True)
 
-
+# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # ================================================================================
 # BLOCO 2: HISTÓRICO DE CONSUMO (CONSOLIDAÇÃO)
 # ================================================================================
@@ -128,7 +134,7 @@ df_hist_grouped["Consumption"] = df_hist_grouped["Consumption"].astype("float64"
 # 2.4 Output Final Bloco 2
 df_output_2 = df_hist_grouped.sort_values(["Component", "MONTH"], ignore_index=True)
 
-
+# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # ================================================================================
 # BLOCO 3: EXPLOSÃO DE CONSUMO POR PRODUTO (BOM EXPLOSION)
 # ================================================================================
@@ -179,7 +185,7 @@ for col in cols_int:
 # 3.6 Output Final Bloco 3
 df_output_3 = df_bom_agg.sort_values(["Component", "base_date", "ProductCode", "DATA_PEDIDO"], ignore_index=True)
 
-
+# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # ================================================================================
 # 4. SALVAMENTO DOS OUTPUTS (PERSISTÊNCIA CENTRALIZADA)
 # ================================================================================
@@ -204,3 +210,4 @@ Helpers.save_output_dataset(
     output_name='components_consumption_by_products',
     data_frame=df_output_3
 )
+
