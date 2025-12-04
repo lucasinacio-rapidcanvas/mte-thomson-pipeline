@@ -1,4 +1,6 @@
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
+# Required imports
+
 from utils.notebookhelpers.helpers import Helpers
 from utils.dtos.templateOutputCollection import TemplateOutputCollection
 from utils.dtos.templateOutput import TemplateOutput
@@ -8,7 +10,11 @@ from utils.dtos.variable import Metadata
 from utils.rcclient.commons.variable_datatype import VariableDatatype
 from utils.dtos.templateOutput import FileType
 from utils.dtos.rc_ml_model import RCMLModel
+from utils.notebookhelpers.helpers import Helpers
 from utils.libutils.vectorStores.utils import VectorStoreUtils
+from utils.rc.client.auth import AuthClient
+from utils.rc.client.requests import Requests
+from utils.rc.dtos.user import User
 
 context = Helpers.getOrCreateContext(contextId='contextId', localVars=locals())
 
@@ -23,10 +29,11 @@ import holidays
 import calendar
 import regex as re
 import xgboost as xgb
-from sklearn.model_selection import TimeSeriesSplit, RandomizedSearchCV
+from sklearn.model_selection import TimeSeriesSplit, RandomizedSearchCV, train_test_split
 from sklearn.metrics import (
     make_scorer, mean_absolute_error, mean_squared_error, 
-    r2_score, mean_absolute_percentage_error, median_absolute_error
+    r2_score, mean_absolute_percentage_error, median_absolute_error,
+    accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 )
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
@@ -154,7 +161,6 @@ df_vendas = df_vendas[['B1_COD_PP', 'MES', 'QUANTIDADE']].rename(columns = {'B1_
 df_vendas = df_vendas.groupby(['COMPONENT', 'MES']).agg({
     'QUANTIDADE': 'sum' 
 }).reset_index().sort_values(['COMPONENT',  'MES'])
-df_vendas
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # ==================================================================================
@@ -185,9 +191,7 @@ print(f"   TARGETs vazios após dados internos: {n_nans_antes}")
 if n_nans_antes > 0:
     print("\n   Fase 2: Preenchendo com dados do df_vendas...")
     
-    # ✅ PREPARAR DF_VENDAS
     df_vendas_clean = df_vendas.copy()
-    # Apenas garante que a quantidade no df_vendas não seja NaN, mas não altera o Target ainda
     df_vendas_clean['QUANTIDADE'] = df_vendas_clean['QUANTIDADE'].fillna(0)
     
     # Calcular DATA_ALVO_NECESSARIA
@@ -212,13 +216,11 @@ if n_nans_antes > 0:
     # Preencher TARGET onde ainda está vazio
     mask_nan = df_final['TARGET'].isna()
     
-    # Identificar nome correto da coluna após o merge
     if 'QUANTIDADE_vendas' in df_merged.columns:
         coluna_alvo = 'QUANTIDADE_vendas'
     else:
         coluna_alvo = 'QUANTIDADE' 
 
-    # Atribui o valor encontrado. Se não achou match, df_merged[...] será NaN, mantendo o Target como NaN.
     df_final.loc[mask_nan, 'TARGET'] = df_merged.loc[mask_nan, coluna_alvo]
     
     # Limpar colunas auxiliares
@@ -227,41 +229,6 @@ if n_nans_antes > 0:
     n_nans_depois = df_final['TARGET'].isna().sum()
     print(f"   TARGETs vazios após df_vendas: {n_nans_depois}")
     print(f"   ✅ Recuperamos {n_nans_antes - n_nans_depois} linhas!")
-    
-    # ✅ DIAGNÓSTICO (Sem preencher com 0)
-    if n_nans_depois > 0:
-        print(f"\n   ⚠️ DIAGNÓSTICO DOS {n_nans_depois} NANs RESTANTES (Serão mantidos como NaN):")
-        
-        df_nans = df_final[df_final['TARGET'].isna()].copy()
-        df_nans['DATA_ALVO'] = [
-            m + pd.DateOffset(months=int(lt)) 
-            for m, lt in zip(df_nans['MES'], df_nans['LEAD_TIME'])
-        ]
-        
-        # Verificar se são datas fora do range do df_vendas
-        min_vendas = df_vendas_clean['MES'].min()
-        max_vendas = df_vendas_clean['MES'].max()
-        
-        fora_range = (df_nans['DATA_ALVO'] < min_vendas) | (df_nans['DATA_ALVO'] > max_vendas)
-        n_fora = fora_range.sum()
-        
-        print(f"      Datas ALVO fora do range do df_vendas: {n_fora}")
-        
-        if n_fora > 0:
-            print(f"      Exemplo de datas fora do range:")
-            print(df_nans[fora_range][['COMPONENT', 'MES', 'LEAD_TIME', 'DATA_ALVO']].head(5))
-        
-        # Verificar componentes sem dados no df_vendas
-        components_sem_vendas = set(df_nans['COMPONENT']) - set(df_vendas_clean['COMPONENT'])
-        if components_sem_vendas:
-            print(f"\n      COMPONENTs ausentes no df_vendas: {len(components_sem_vendas)}")
-            print(f"      Exemplos: {list(components_sem_vendas)[:5]}")
-
-        # 🛑 AQUI ESTAVA O FILTRO DE ZEROS QUE FOI REMOVIDO 🛑
-        print(f"\n      ⚠️ NENHUM preenchimento com 0 foi realizado. Mantendo NaNs originais.")
-
-else:
-    print("   ✅ Todos os TARGETs preenchidos com dados internos!")
 
 print(f"\n✅ TARGET criado com sucesso!")
 print(f"   Total de linhas: {len(df_final):,}")
@@ -306,6 +273,60 @@ for classe in ['A', 'B', 'C']:
     pct_volume = (volume / total_volume) * 100
     print(f"      Classe {classe}: {n_components:,} COMPONENTs ({pct_volume:.1f}% do volume)")
 
+# ==================================================================================
+# ✅ SOLUÇÃO 1: FILTRAR COMPONENTES ESPORÁDICOS
+# ==================================================================================
+print("\n" + "="*80)
+print("🔍 SOLUÇÃO 1: FILTRAR COMPONENTES ESPORÁDICOS")
+print("="*80)
+
+# Calcular % de meses com compra por COMPONENT+FORNECEDOR
+df_freq = df_final.groupby(['COMPONENT', 'COD_FORNE']).agg({
+    'QUANTIDADE': lambda x: (x > 0).sum() / len(x) if len(x) > 0 else 0
+}).reset_index()
+df_freq.columns = ['COMPONENT', 'COD_FORNE', 'FREQ_COMPRA']
+
+print(f"\n📊 Distribuição de Frequência de Compra:")
+print(df_freq['FREQ_COMPRA'].describe())
+print(f"\nQuantis:")
+print(df_freq['FREQ_COMPRA'].quantile([0.1, 0.25, 0.5, 0.75, 0.9]))
+
+# ✅ THRESHOLD: Manter apenas pares que compram em >= 20% dos meses
+THRESHOLD_FREQ = 0.20
+
+componentes_validos = df_freq[df_freq['FREQ_COMPRA'] >= THRESHOLD_FREQ]
+
+print(f"\n✂️  Filtragem com threshold = {THRESHOLD_FREQ*100}%:")
+print(f"   Total pares COMPONENT+FORNECEDOR: {len(df_freq):,}")
+print(f"   Com frequência >= {THRESHOLD_FREQ*100}%: {len(componentes_validos):,}")
+print(f"   Removidos: {len(df_freq) - len(componentes_validos):,} ({(1-len(componentes_validos)/len(df_freq))*100:.1f}%)")
+
+# Aplicar filtro
+df_final_antes = df_final.copy()
+df_final = pd.merge(
+    df_final,
+    componentes_validos[['COMPONENT', 'COD_FORNE']],
+    on=['COMPONENT', 'COD_FORNE'],
+    how='inner'
+)
+
+print(f"\n📉 Impacto no Dataset:")
+print(f"   Antes: {len(df_final_antes):,} linhas")
+print(f"   Depois: {len(df_final):,} linhas")
+print(f"   Redução: {(1-len(df_final)/len(df_final_antes))*100:.1f}%")
+
+# 🎯 VERIFICAR DISTRIBUIÇÃO DE ZEROS
+n_zeros_antes = (df_final_antes['TARGET'] == 0).sum()
+n_zeros_depois = (df_final['TARGET'] == 0).sum()
+
+print(f"\n🎯 Distribuição de TARGET:")
+print(f"   ANTES:")
+print(f"      Zeros: {n_zeros_antes:,} ({n_zeros_antes/len(df_final_antes)*100:.1f}%)")
+print(f"      Não-zeros: {len(df_final_antes) - n_zeros_antes:,} ({(1-n_zeros_antes/len(df_final_antes))*100:.1f}%)")
+print(f"   DEPOIS:")
+print(f"      Zeros: {n_zeros_depois:,} ({n_zeros_depois/len(df_final)*100:.1f}%)")
+print(f"      Não-zeros: {len(df_final) - n_zeros_depois:,} ({(1-n_zeros_depois/len(df_final))*100:.1f}%)")
+
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # ==================================================================================
 # 4. CRIAÇÃO DAS FEATURES DE HISTÓRICO (LAGS)
@@ -316,19 +337,69 @@ cols_lags = []
 for i in range(1, 13):
     col_name = f'HISTORICO_VENDAS_LAG{i}'
     cols_lags.append(col_name)
-    # Shift Positivo (i) pega o valor passado
     df_final[col_name] = df_final.groupby(['COMPONENT', 'COD_FORNE'])['QUANTIDADE'].shift(i)
 
 print(f"   ✅ {len(cols_lags)} LAGs criados")
-print(f"   Exemplo de colunas: {cols_lags[:3]}")
-
-# Verificar
-print(f"\n   🔍 Verificação:")
-print(f"      LAG1 tem {df_final['HISTORICO_VENDAS_LAG1'].notna().sum():,} valores válidos")
-print(f"      LAG12 tem {df_final['HISTORICO_VENDAS_LAG12'].notna().sum():,} valores válidos")
 
 # ==================================================================================
-# 5. CRIAÇÃO DAS FEATURES DE SAZONALIDADE
+# ✅ SOLUÇÃO 2: FEATURES DE ESPORADICIDADE
+# ==================================================================================
+print("\n" + "="*80)
+print("📊 SOLUÇÃO 2: CRIANDO FEATURES DE ESPORADICIDADE")
+print("="*80)
+
+df_final = df_final.sort_values(['COMPONENT', 'COD_FORNE', 'MES'])
+
+# 1. Meses desde última compra
+print("   Criando: MESES_DESDE_ULTIMA_COMPRA...")
+df_final['MESES_DESDE_ULTIMA_COMPRA'] = 0
+
+for (comp, forn), group in df_final.groupby(['COMPONENT', 'COD_FORNE']):
+    meses_sem_compra = 0
+    valores = []
+    
+    for idx, row in group.iterrows():
+        valores.append(meses_sem_compra)
+        
+        if row['QUANTIDADE'] > 0:
+            meses_sem_compra = 0
+        else:
+            meses_sem_compra += 1
+    
+    df_final.loc[group.index, 'MESES_DESDE_ULTIMA_COMPRA'] = valores
+
+# 2. Frequência de compra (rolling 12 meses)
+print("   Criando: FREQ_COMPRA_12M...")
+def calc_freq_compra(series):
+    return (series > 0).sum() / len(series) if len(series) > 0 else 0
+
+df_final['FREQ_COMPRA_12M'] = (
+    df_final.groupby(['COMPONENT', 'COD_FORNE'])['QUANTIDADE']
+    .transform(lambda x: x.rolling(12, min_periods=1).apply(calc_freq_compra, raw=False))
+)
+
+# 3. Valor médio quando compra
+print("   Criando: VALOR_MEDIO_QUANDO_COMPRA...")
+def valor_medio_quando_compra(series):
+    valores_positivos = series[series > 0]
+    return valores_positivos.mean() if len(valores_positivos) > 0 else 0
+
+df_final['VALOR_MEDIO_QUANDO_COMPRA'] = (
+    df_final.groupby(['COMPONENT', 'COD_FORNE'])['QUANTIDADE']
+    .transform(lambda x: x.rolling(12, min_periods=1).apply(valor_medio_quando_compra, raw=False))
+)
+
+# 4. Flag: Comprou no mês anterior?
+print("   Criando: COMPROU_MES_ANTERIOR...")
+df_final['COMPROU_MES_ANTERIOR'] = (
+    df_final.groupby(['COMPONENT', 'COD_FORNE'])['QUANTIDADE']
+    .shift(1) > 0
+).astype(int)
+
+print(f"\n   ✅ 4 Features de esporadicidade criadas!")
+
+# ==================================================================================
+# 5. CRIAÇÃO DAS FEATURES DE SAZONALIDADE E OUTRAS
 # ==================================================================================
 df_final['MES_NUM'] = df_final['MES'].dt.month
 df_final['TRIMESTRE'] = df_final['MES'].dt.quarter
@@ -344,34 +415,34 @@ print("="*80)
 
 df_final = df_final.sort_values(['COMPONENT', 'COD_FORNE', 'MES'])
 
-# 1. Diferenças (usando os lags que já existem)
+# 1. Diferenças
 print("   Criando diferenças...")
 df_final['diff_1'] = df_final['QUANTIDADE'] - df_final['HISTORICO_VENDAS_LAG1']
 df_final['diff_2'] = df_final['HISTORICO_VENDAS_LAG1'] - df_final['HISTORICO_VENDAS_LAG2']
 df_final['diff_3'] = df_final['HISTORICO_VENDAS_LAG2'] - df_final['HISTORICO_VENDAS_LAG3']
 
-# 2. Rolling Statistics (usando os lags existentes)
+# 2. Rolling Statistics
 print("   Criando rolling statistics...")
 
-# Rolling Mean (janelas de 3, 6, 12)
+# Rolling Mean
 df_final['rolling_mean_3'] = df_final[['HISTORICO_VENDAS_LAG1', 'HISTORICO_VENDAS_LAG2', 'HISTORICO_VENDAS_LAG3']].mean(axis=1)
 df_final['rolling_mean_6'] = df_final[['HISTORICO_VENDAS_LAG1', 'HISTORICO_VENDAS_LAG2', 'HISTORICO_VENDAS_LAG3', 
                                         'HISTORICO_VENDAS_LAG4', 'HISTORICO_VENDAS_LAG5', 'HISTORICO_VENDAS_LAG6']].mean(axis=1)
 df_final['rolling_mean_12'] = df_final[[f'HISTORICO_VENDAS_LAG{i}' for i in range(1, 13)]].mean(axis=1)
 
-# Rolling Std (janelas de 3, 6, 12)
+# Rolling Std
 df_final['rolling_std_3'] = df_final[['HISTORICO_VENDAS_LAG1', 'HISTORICO_VENDAS_LAG2', 'HISTORICO_VENDAS_LAG3']].std(axis=1)
 df_final['rolling_std_6'] = df_final[['HISTORICO_VENDAS_LAG1', 'HISTORICO_VENDAS_LAG2', 'HISTORICO_VENDAS_LAG3', 
                                        'HISTORICO_VENDAS_LAG4', 'HISTORICO_VENDAS_LAG5', 'HISTORICO_VENDAS_LAG6']].std(axis=1)
 df_final['rolling_std_12'] = df_final[[f'HISTORICO_VENDAS_LAG{i}' for i in range(1, 13)]].std(axis=1)
 
-# Rolling Max (janelas de 3, 6, 12)
+# Rolling Max
 df_final['rolling_max_3'] = df_final[['HISTORICO_VENDAS_LAG1', 'HISTORICO_VENDAS_LAG2', 'HISTORICO_VENDAS_LAG3']].max(axis=1)
 df_final['rolling_max_6'] = df_final[['HISTORICO_VENDAS_LAG1', 'HISTORICO_VENDAS_LAG2', 'HISTORICO_VENDAS_LAG3', 
                                        'HISTORICO_VENDAS_LAG4', 'HISTORICO_VENDAS_LAG5', 'HISTORICO_VENDAS_LAG6']].max(axis=1)
 df_final['rolling_max_12'] = df_final[[f'HISTORICO_VENDAS_LAG{i}' for i in range(1, 13)]].max(axis=1)
 
-# Rolling Min (janelas de 3, 6, 12)
+# Rolling Min
 df_final['rolling_min_3'] = df_final[['HISTORICO_VENDAS_LAG1', 'HISTORICO_VENDAS_LAG2', 'HISTORICO_VENDAS_LAG3']].min(axis=1)
 df_final['rolling_min_6'] = df_final[['HISTORICO_VENDAS_LAG1', 'HISTORICO_VENDAS_LAG2', 'HISTORICO_VENDAS_LAG3', 
                                        'HISTORICO_VENDAS_LAG4', 'HISTORICO_VENDAS_LAG5', 'HISTORICO_VENDAS_LAG6']].min(axis=1)
@@ -397,7 +468,7 @@ numeric_cols = df_final.select_dtypes(include=[np.number]).columns
 for col in numeric_cols:
     df_final[col] = df_final[col].replace([np.inf, -np.inf], np.nan)
     
-# Preencher NaNs nas rolling statistics (quando não há dados suficientes)
+# Preencher NaNs nas rolling statistics
 rolling_cols = [col for col in df_final.columns if 'rolling_' in col]
 for col in rolling_cols:
     df_final[col] = df_final[col].fillna(0)
@@ -414,52 +485,26 @@ print("\n" + "="*80)
 print("📐 PREPARAÇÃO PARA MODELAGEM")
 print("="*80)
 
-
 df_model_data = df_final.copy()
 
 print(f"   Dataset para modelagem: {df_model_data.shape}")
 
-# Definir features (excluindo colunas de identificação e TARGET)
+# Definir features
 ignore_cols = [
     'COMPONENT', 'COD_FORNE', 'MES', 'TARGET', 'DATA_SI', 'CLASSE_ABC', 'QUANTIDADE'
 ]
 ignore_cols = [c for c in ignore_cols if c in df_model_data.columns]
 
-# CRÍTICO: Filtrar apenas colunas numéricas (excluir datetime)
 all_possible_features = [c for c in df_model_data.columns if c not in ignore_cols]
 
-# Verificar tipo de cada coluna
+# Filtrar apenas numéricas
 features = []
-excluded_features = []
-
 for col in all_possible_features:
     dtype = df_model_data[col].dtype
-    # Aceitar apenas tipos numéricos (int, float, bool)
     if dtype in ['int64', 'float64', 'int32', 'float32', 'bool', 'uint8', 'int8']:
         features.append(col)
-    else:
-        excluded_features.append(col)
 
 print(f"\n   ✅ Features numéricas selecionadas: {len(features)}")
-
-if excluded_features:
-    print(f"   ⚠️ Features excluídas (não-numéricas): {len(excluded_features)}")
-    print(f"      Exemplos: {excluded_features[:5]}")
-
-# Contar features por tipo
-historico_features_count = len([f for f in features if 'HISTORICO_VENDAS_LAG' in f])
-outras_features_count = len(features) - historico_features_count
-
-print(f"\n   📊 Breakdown de Features:")
-print(f"      📈 Histórico (LAGS): {historico_features_count}")
-print(f"      🔧 Outras: {outras_features_count}")
-print(f"      📊 TOTAL: {len(features)}")
-
-print(f"\n   🔍 Verificação de LAGs:")
-lag_cols = [c for c in features if 'HISTORICO_VENDAS_LAG' in c]
-for lag_col in lag_cols[:3]:  # Primeiros 3
-    n_nans = df_model_data[lag_col].isna().sum()
-    print(f"      {lag_col}: {n_nans} NaNs ({n_nans/len(df_model_data)*100:.1f}%)")
 
 # Split temporal (80/20)
 months = sorted(df_model_data['MES'].unique())
@@ -476,391 +521,702 @@ print(f"      Teste:  {len(test_months)} meses ({test_months[0]} até {test_mont
 print(f"      Registros Treino: {len(df_train):,}")
 print(f"      Registros Teste:  {len(df_test):,}")
 
-# Após o split:
-print(f"\n   📊 Distribuição temporal:")
-print(f"      Treino - Meses: {len(train_months)}")
-for mes in train_months[:3]:
-    n = len(df_train[df_train['MES'] == mes])
-    print(f"         {pd.to_datetime(mes).strftime('%Y-%m')}: {n:,} linhas")
-print(f"      ...")
-print(f"      Teste - Meses: {len(test_months)}")
-for mes in test_months[:3]:
-    n = len(df_test[df_test['MES'] == mes])
-    print(f"         {pd.to_datetime(mes).strftime('%Y-%m')}: {n:,} linhas")
-
-# Verificar se há dados suficientes
-print(f"\n   🔍 Verificação de Dados:")
-print(f"      TARGET com NaN (treino): {df_train['TARGET'].isna().sum()}")
-print(f"      TARGET com NaN (teste): {df_test['TARGET'].isna().sum()}")
-
-# Preencher NaNs remanescentes nas features
+# Preencher NaNs
 print(f"\n   🧹 Preenchendo NaNs nas features...")
 df_train[features] = df_train[features].fillna(0)
 df_test[features] = df_test[features].fillna(0)
 
-# DIAGNÓSTICO: Verificar tipos antes do treinamento
-print(f"\n   🔬 Diagnóstico de Tipos:")
-non_numeric = []
-for col in features:
-    if df_train[col].dtype not in ['int64', 'float64', 'int32', 'float32', 'bool', 'uint8', 'int8']:
-        non_numeric.append((col, df_train[col].dtype))
-
-if non_numeric:
-    print(f"      ⚠️ ATENÇÃO: {len(non_numeric)} features com tipo não-numérico:")
-    for col, dtype in non_numeric[:10]:
-        print(f"         - {col}: {dtype}")
-    
-    # Remover essas features
-    features = [f for f in features if f not in [c for c, _ in non_numeric]]
-    print(f"      ✅ Features removidas. Total restante: {len(features)}")
-else:
-    print(f"      ✅ Todas as {len(features)} features são numéricas")
-
 print(f"\n   ✅ Dados preparados para treinamento!")
 
-# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# -------------------------------------------------------------------------------- 
-# FUNÇÃO DE TREINO ABC-XGBOOST
-# -------------------------------------------------------------------------------- 
-def train_abc_models(df_train, df_test, features, product_class_map, user_param_grid=None, n_iter_search=30):
-    """
-    Treina um modelo XGBoost separado para cada classe ABC.
-    """
-    
-    print("\n" + "="*80)
-    print("🚀 TREINAMENTO DE MODELOS XGBOOST SEPARADOS POR CLASSE ABC")
-    print("="*80)
-    
-    if user_param_grid is None:
-        user_param_grid = {}
+# ==================================================================================
+# ✅ SOLUÇÃO 3: FUNÇÃO TWO-STAGE MODEL
+# ==================================================================================
 
+def train_abc_two_stage_models(df_train, df_test, features, product_class_map, n_iter_search=30, verbose=True):
+    """
+    Modelo Two-Stage:
+    - Stage 1: Classificação (vai comprar ou não?)
+    - Stage 2: Regressão (se sim, quanto?)
+    """
+    
+    if verbose:
+        print("\n" + "="*80)
+        print("🚀 SOLUÇÃO 3: TREINAMENTO TWO-STAGE (CLASSIFICAÇÃO + REGRESSÃO)")
+        print("="*80)
+    
     # Classificar treino e teste
     classes_train = df_train['COMPONENT'].map(product_class_map).fillna('C').values
     classes_test = df_test['COMPONENT'].map(product_class_map).fillna('C').values
     
-    n_A = (classes_train == 'A').sum()
-    n_B = (classes_train == 'B').sum()
-    n_C = (classes_train == 'C').sum()
+    if verbose:
+        n_A = (classes_train == 'A').sum()
+        n_B = (classes_train == 'B').sum()
+        n_C = (classes_train == 'C').sum()
+        
+        print(f"\n📊 Distribuição de LINHAS de treino:")
+        print(f"    Classe A: {n_A:,} linhas ({n_A/len(classes_train)*100:.1f}%)")
+        print(f"    Classe B: {n_B:,} linhas ({n_B/len(classes_train)*100:.1f}%)")
+        print(f"    Classe C: {n_C:,} linhas ({n_C/len(classes_train)*100:.1f}%)")
     
-    print(f"\n📊 Distribuição de LINHAS de treino:")
-    print(f"    Classe A: {n_A:,} linhas ({n_A/len(classes_train)*100:.1f}%)")
-    print(f"    Classe B: {n_B:,} linhas ({n_B/len(classes_train)*100:.1f}%)")
-    print(f"    Classe C: {n_C:,} linhas ({n_C/len(classes_train)*100:.1f}%)")
-    print()
-
     # Preparar dados
     X_train = df_train[features].fillna(0).astype('float64')
     y_train = df_train["TARGET"].fillna(0).astype('float64')
     X_test = df_test[features].fillna(0).astype('float64')
     y_test = df_test["TARGET"].fillna(0).astype('float64')
-
+    
+    # STAGE 1: Classificação (0 vs >0)
+    y_train_class = (y_train > 0).astype(int)
+    y_test_class = (y_test > 0).astype(int)
+    
     abc_models = {
-        'models': {}, 
-        'feature_names': features, 
+        'classifiers': {},
+        'regressors': {},
+        'feature_names': features,
         'product_class_map': product_class_map
     }
     
     y_pred_train = np.zeros(len(y_train))
     y_pred_test = np.zeros(len(y_test))
-
-    # Parâmetros default
-    default_xgb_params = {
-        'n_estimators': 500,
-        'max_depth': 10,
-        'learning_rate': 0.03,
-        'subsample': 0.9,
-        'colsample_bytree': 0.9,
-        'min_child_weight': 5,
-        'reg_alpha': 0.5,
-        'reg_lambda': 0.5,
-        'gamma': 0,
-        'random_state': 42,
-        'objective': 'reg:squarederror',
-        'n_jobs': -1
-    }
-
-    # Treinar modelo para cada classe
+    
     for classe in ['A', 'B', 'C']:
-        print("-" * 60)
-        print(f"🧠 Treinando Modelo para CLASSE {classe}")
-        print("-" * 60)
+        if verbose:
+            print(f"\n{'='*60}")
+            print(f"🧠 Classe {classe}")
+            print(f"{'='*60}")
         
         mask_train = (classes_train == classe)
         X_train_classe = X_train[mask_train]
-        y_train_classe = y_train[mask_train]
+        y_train_classe_class = y_train_class[mask_train]
+        y_train_classe_reg = y_train[mask_train]
         
         if len(X_train_classe) == 0:
-            print(f"    ⚠️ Sem dados de treino para Classe {classe}. Pulando.")
-            abc_models['models'][classe] = None
+            if verbose:
+                print(f"    ⚠️ Sem dados para Classe {classe}")
             continue
-            
-        model_classe = None
         
-        # GridSearch ou treino padrão
-        if classe in user_param_grid:
-            print(f"    🔍 Executando RandomizedSearchCV para Classe {classe}...")
-            param_grid = user_param_grid[classe]
-            
-            base_model = xgb.XGBRegressor(n_jobs=-1, random_state=42)
-
-            tscv = TimeSeriesSplit(n_splits=3, max_train_size=12, test_size=3)
-
-            search = RandomizedSearchCV(
-                base_model, 
-                param_grid, 
-                scoring=make_scorer(mape, greater_is_better=False), 
-                cv=tscv, 
-                n_iter=n_iter_search, 
-                n_jobs=-1, 
-                verbose=1,
+        # STAGE 1: CLASSIFICADOR
+        if verbose:
+            print(f"\n   🎯 STAGE 1: Classificador (Compra Sim/Não)")
+        
+        n_positivos = (y_train_classe_class == 1).sum()
+        n_negativos = (y_train_classe_class == 0).sum()
+        
+        if verbose:
+            print(f"      Positivos (compra): {n_positivos} ({n_positivos/len(y_train_classe_class)*100:.1f}%)")
+            print(f"      Negativos (não compra): {n_negativos} ({n_negativos/len(y_train_classe_class)*100:.1f}%)")
+        
+        # ✅ AJUSTAR scale_pos_weight: Usar raiz quadrada
+        scale_weight_raw = n_negativos / n_positivos if n_positivos > 0 else 1.0
+        scale_weight = np.sqrt(scale_weight_raw)
+        
+        if verbose:
+            print(f"      scale_pos_weight: {scale_weight:.2f} (raw: {scale_weight_raw:.2f})")
+        
+        classifier_params = {
+            'n_estimators': 200,
+            'max_depth': 6,
+            'learning_rate': 0.1,
+            'scale_pos_weight': scale_weight,
+            'subsample': 0.8,
+            'colsample_bytree': 0.8,
+            'random_state': 42,
+            'objective': 'binary:logistic',
+            'n_jobs': -1,
+            'eval_metric': 'logloss'
+        }
+        
+        classifier = xgb.XGBClassifier(**classifier_params)
+        classifier.fit(X_train_classe, y_train_classe_class)
+        
+        y_pred_class_train = classifier.predict(X_train_classe)
+        y_pred_proba_train = classifier.predict_proba(X_train_classe)[:, 1]
+        
+        acc = accuracy_score(y_train_classe_class, y_pred_class_train)
+        prec = precision_score(y_train_classe_class, y_pred_class_train, zero_division=0)
+        rec = recall_score(y_train_classe_class, y_pred_class_train, zero_division=0)
+        f1 = f1_score(y_train_classe_class, y_pred_class_train, zero_division=0)
+        
+        if verbose:
+            try:
+                auc = roc_auc_score(y_train_classe_class, y_pred_proba_train)
+                print(f"      ✅ Acc: {acc:.3f} | Prec: {prec:.3f} | Recall: {rec:.3f} | F1: {f1:.3f} | AUC: {auc:.3f}")
+            except:
+                print(f"      ✅ Acc: {acc:.3f} | Prec: {prec:.3f} | Recall: {rec:.3f} | F1: {f1:.3f}")
+        
+        abc_models['classifiers'][classe] = classifier
+        
+        # STAGE 2: REGRESSOR
+        if verbose:
+            print(f"\n   📊 STAGE 2: Regressor (Quanto vai comprar?)")
+        
+        mask_positive = y_train_classe_reg > 0
+        X_train_classe_reg = X_train_classe[mask_positive]
+        y_train_classe_reg_positive = y_train_classe_reg[mask_positive]
+        
+        if len(X_train_classe_reg) == 0:
+            if verbose:
+                print(f"      ⚠️ Sem valores positivos para treinar regressor")
+            abc_models['regressors'][classe] = None
+            continue
+        
+        if verbose:
+            print(f"      Amostras: {len(X_train_classe_reg):,}")
+            print(f"      Média: {y_train_classe_reg_positive.mean():.1f} | Mediana: {y_train_classe_reg_positive.median():.1f}")
+        
+        # ✅ HIPERPARÂMETROS AJUSTADOS
+        regressor_params_base = {
+            'n_estimators': 200,
+            'max_depth': 3,
+            'learning_rate': 0.1,
+            'subsample': 0.7,
+            'colsample_bytree': 0.7,
+            'min_child_weight': 20,
+            'reg_alpha': 10.0,
+            'reg_lambda': 10.0,
+            'gamma': 5.0,
+            'random_state': 42,
+            'objective': 'reg:squarederror',
+            'n_jobs': -1
+        }
+        
+        # ✅ EARLY STOPPING
+        if len(X_train_classe_reg) > 50:
+            X_train_split, X_val_split, y_train_split, y_val_split = train_test_split(
+                X_train_classe_reg, 
+                y_train_classe_reg_positive,
+                test_size=0.2,
                 random_state=42
             )
             
-            try:
-                search.fit(X_train_classe, y_train_classe)
-                model_classe = search.best_estimator_
-                print(f"    ✅ Melhores parâmetros: {search.best_params_}")
-            except Exception as e:
-                print(f"    ❌ ERRO no RandomizedSearchCV: {e}")
-                print("    Voltando para parâmetros padrão...")
-                model_classe = xgb.XGBRegressor(**default_xgb_params)
-                model_classe.fit(X_train_classe, y_train_classe)
+            regressor = xgb.XGBRegressor(**regressor_params_base, early_stopping_rounds=20)
+            regressor.fit(
+                X_train_split, 
+                y_train_split,
+                eval_set=[(X_val_split, y_val_split)],
+                verbose=False
+            )
+            
+            best_n = regressor.best_iteration if hasattr(regressor, 'best_iteration') else regressor_params_base['n_estimators']
+            
+            regressor_params_final = regressor_params_base.copy()
+            regressor_params_final['n_estimators'] = min(best_n + 10, regressor_params_base['n_estimators'])
+            
+            regressor = xgb.XGBRegressor(**regressor_params_final)
+            regressor.fit(X_train_classe_reg, y_train_classe_reg_positive)
         else:
-            print(f"    ⚙️  Treinando Classe {classe} com parâmetros padrão...")
-            model_classe = xgb.XGBRegressor(**default_xgb_params)
-            model_classe.fit(X_train_classe, y_train_classe)
-            
-        # Armazenar modelo
-        abc_models['models'][classe] = model_classe
+            regressor = xgb.XGBRegressor(**regressor_params_base)
+            regressor.fit(X_train_classe_reg, y_train_classe_reg_positive)
         
-        # Prever no treino
-        pred_train_classe = model_classe.predict(X_train_classe)
-        y_pred_train[mask_train] = pred_train_classe
+        y_pred_reg_train = regressor.predict(X_train_classe_reg)
+        y_pred_reg_train = np.maximum(y_pred_reg_train, 0)
         
-        # Prever no teste
+        mae_reg = mean_absolute_error(y_train_classe_reg_positive, y_pred_reg_train)
+        mape_reg = mape(y_train_classe_reg_positive, y_pred_reg_train)
+        wmape_reg = wmape(y_train_classe_reg_positive, y_pred_reg_train)
+        
+        if verbose:
+            print(f"      ✅ MAE: {mae_reg:.2f} | MAPE: {mape_reg:.4f} | WMAPE: {wmape_reg:.4f}")
+        
+        abc_models['regressors'][classe] = regressor
+        
+        # PREVISÃO COMBINADA COM THRESHOLD
+        prob_compra_train = classifier.predict_proba(X_train_classe)[:, 1]
+        pred_reg_train = regressor.predict(X_train_classe)
+        pred_reg_train = np.maximum(pred_reg_train, 0)
+        
+        threshold = 0.65
+        prob_compra_train_calibrada = np.where(prob_compra_train >= threshold, prob_compra_train, 0)
+        
+        pred_train_final = prob_compra_train_calibrada * pred_reg_train
+        
+        y_pred_train[mask_train] = pred_train_final
+        
+        # Teste
         mask_test = (classes_test == classe)
-        X_test_classe = X_test[mask_test]
-        if not X_test_classe.empty:
-            pred_test_classe = model_classe.predict(X_test_classe)
-            y_pred_test[mask_test] = pred_test_classe
+        if mask_test.sum() > 0:
+            X_test_classe = X_test[mask_test]
+            prob_compra_test = classifier.predict_proba(X_test_classe)[:, 1]
+            pred_reg_test = regressor.predict(X_test_classe)
+            pred_reg_test = np.maximum(pred_reg_test, 0)
             
-        # Métricas de treino da classe
-        mae_train_classe = mean_absolute_error(y_train_classe, pred_train_classe)
-        mape_train_classe = mape(y_train_classe, pred_train_classe)
-        print(f"    📈 Classe {classe} (Treino) - MAE: {mae_train_classe:.2f} | MAPE: {mape_train_classe:.4f}")
-
-    # Métricas finais
+            prob_compra_test_calibrada = np.where(prob_compra_test >= threshold, prob_compra_test, 0)
+            
+            pred_test_final = prob_compra_test_calibrada * pred_reg_test
+            
+            y_pred_test[mask_test] = pred_test_final
+    
     y_pred_train = np.maximum(y_pred_train, 0)
     y_pred_test = np.maximum(y_pred_test, 0)
     
-    y_pred_train = np.nan_to_num(y_pred_train, nan=y_train.mean())
-    y_pred_test = np.nan_to_num(y_pred_test, nan=y_train.mean())
+    # MÉTRICAS FINAIS
+    if verbose:
+        print("\n" + "="*80)
+        print("📊 MÉTRICAS FINAIS TWO-STAGE")
+        print("="*80)
+        
+        for classe in ['A', 'B', 'C']:
+            mask_train = (classes_train == classe)
+            mask_test = (classes_test == classe)
+            
+            if mask_train.sum() > 0:
+                mae_train = mean_absolute_error(y_train[mask_train], y_pred_train[mask_train])
+                mape_train = mape(y_train[mask_train], y_pred_train[mask_train])
+                wmape_train = wmape(y_train[mask_train], y_pred_train[mask_train])
+                print(f"    TREINO Classe {classe} - MAE: {mae_train:.2f} | MAPE: {mape_train:.4f} | WMAPE: {wmape_train:.4f}")
+                
+            if mask_test.sum() > 0:
+                mae_test = mean_absolute_error(y_test[mask_test], y_pred_test[mask_test])
+                mape_test = mape(y_test[mask_test], y_pred_test[mask_test])
+                wmape_test = wmape(y_test[mask_test], y_pred_test[mask_test])
+                print(f"    TESTE  Classe {classe} - MAE: {mae_test:.2f} | MAPE: {mape_test:.4f} | WMAPE: {wmape_test:.4f}")
+        
+        print("-" * 40)
+        mae_geral_train = mean_absolute_error(y_train, y_pred_train)
+        mae_geral_test = mean_absolute_error(y_test, y_pred_test)
+        wmape_geral_train = wmape(y_train, y_pred_train)
+        wmape_geral_test = wmape(y_test, y_pred_test)
+        mape_geral_train = mape(y_train, y_pred_train)
+        mape_geral_test = mape(y_test, y_pred_test)
+        
+        print(f"    GERAL (Treino) - MAE: {mae_geral_train:.2f} | MAPE: {mape_geral_train:.4f} | WMAPE: {wmape_geral_train:.4f}")
+        print(f"    GERAL (Teste)  - MAE: {mae_geral_test:.2f} | MAPE: {mape_geral_test:.4f} | WMAPE: {wmape_geral_test:.4f}")
+        
+        print("\n" + "-" * 40)
+        print("🔬 ANÁLISE DE OVERFITTING (Razão Teste/Treino):")
+        for classe in ['A', 'B', 'C']:
+            mask_train = (classes_train == classe)
+            mask_test = (classes_test == classe)
+            
+            if mask_train.sum() > 0 and mask_test.sum() > 0:
+                wmape_train_c = wmape(y_train[mask_train], y_pred_train[mask_train])
+                wmape_test_c = wmape(y_test[mask_test], y_pred_test[mask_test])
+                ratio = wmape_test_c / wmape_train_c if wmape_train_c > 0 else 0
+                
+                status = "✅" if ratio < 1.5 else "⚠️" if ratio < 3.0 else "❌"
+                print(f"    {status} Classe {classe}: {ratio:.2f}x (Treino: {wmape_train_c:.2f} → Teste: {wmape_test_c:.2f})")
+        
+        ratio_geral = wmape_geral_test / wmape_geral_train if wmape_geral_train > 0 else 0
+        status_geral = "✅" if ratio_geral < 1.5 else "⚠️" if ratio_geral < 3.0 else "❌"
+        print(f"    {status_geral} GERAL: {ratio_geral:.2f}x (Treino: {wmape_geral_train:.2f} → Teste: {wmape_geral_test:.2f})")
+        print("="*80)
+    
+    return (abc_models, y_train.values, y_pred_train, y_test.values, y_pred_test)
 
-    print("\n" + "="*80)
-    print("📊 MÉTRICAS FINAIS (COMBINADAS)")
-    print("="*80)
+
+def predict_ensemble(ensemble_model, df_features):
+    """Faz previsões usando o modelo Two-Stage."""
+    
+    features = ensemble_model['feature_names']
+    X = df_features[features].fillna(0).astype('float64')
+    
+    predictions = np.zeros(len(df_features))
     
     for classe in ['A', 'B', 'C']:
-        mask_train = (classes_train == classe)
-        mask_test = (classes_test == classe)
+        mask = (df_features['CLASSE_ABC'] == classe)
+        if mask.sum() == 0:
+            continue
         
-        if mask_train.sum() > 0:
-            mae_train = mean_absolute_error(y_train[mask_train], y_pred_train[mask_train])
-            mape_train = mape(y_train[mask_train], y_pred_train[mask_train])
-            wmape_train = wmape(y_train[mask_train], y_pred_train[mask_train])
-            print(f"    TREINO Classe {classe} - MAE: {mae_train:.2f} | MAPE: {mape_train:.4f} | WMAE: {wmape_train:.4f}")
-            
-        if mask_test.sum() > 0:
-            mae_test = mean_absolute_error(y_test[mask_test], y_pred_test[mask_test])
-            mape_test = mape(y_test[mask_test], y_pred_test[mask_test])
-            wmape_test = wmape(y_test[mask_test], y_pred_test[mask_test])
-            print(f"    TESTE  Classe {classe} - MAE: {mae_test:.2f} | MAPE: {mape_test:.4f} | WMAE: {wmape_test:.4f}")
-            
-    print("-" * 40)
-    mae_geral_train = mean_absolute_error(y_train, y_pred_train)
-    mae_geral_test = mean_absolute_error(y_test, y_pred_test)
-    wmape_geral_train = wmape(y_train, y_pred_train)
-    wmape_geral_test = wmape(y_test, y_pred_test)
-    print(f"    GERAL (Treino) - MAE: {mae_geral_train:.2f} | WMAE: {wmape_geral_train:.4f}")
-    print(f"    GERAL (Teste)  - MAE: {mae_geral_test:.2f} | WMAE: {wmape_geral_test:.4f}")
+        X_classe = X.loc[mask]
+        
+        classifier = ensemble_model['classifiers'].get(classe)
+        regressor = ensemble_model['regressors'].get(classe)
+        
+        if classifier is None or regressor is None:
+            predictions[mask.values] = 0.0
+            continue
+        
+        prob_compra = classifier.predict_proba(X_classe)[:, 1]
+        qtd_pred = regressor.predict(X_classe)
+        qtd_pred = np.maximum(qtd_pred, 0)
+        
+        threshold = 0.65
+        prob_compra_calibrada = np.where(prob_compra >= threshold, prob_compra, 0)
+        
+        pred_final = prob_compra_calibrada * qtd_pred
+        
+        predictions[mask.values] = pred_final
+    
+    return np.maximum(predictions, 0)
+
+# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
+# ==================================================================================
+# VALIDAÇÃO TEMPORAL DINÂMICA
+# ==================================================================================
+
+def time_series_cross_validation(df_model_data, features, product_class_map, n_splits=5, min_train_months=24):
+    """Validação cruzada temporal dinâmica."""
+    
+    print("\n" + "="*80)
+    print("🔄 VALIDAÇÃO TEMPORAL DINÂMICA (TIME SERIES CV)")
     print("="*80)
     
-    return (
-        abc_models,
-        y_train.values,
-        y_pred_train,
-        y_test.values,
-        y_pred_test
-    )
+    print(f"\n📋 Configuração:")
+    print(f"   N° de folds: {n_splits}")
+    print(f"   Mínimo de meses no treino inicial: {min_train_months}")
+    
+    meses_disponiveis = sorted(df_model_data['MES'].unique())
+    n_meses_total = len(meses_disponiveis)
+    
+    print(f"\n📅 Dados Temporais:")
+    print(f"   Período total: {meses_disponiveis[0].strftime('%Y-%m')} a {meses_disponiveis[-1].strftime('%Y-%m')}")
+    print(f"   Total de meses: {n_meses_total}")
+    
+    meses_disponiveis_para_split = n_meses_total - min_train_months
+    
+    if meses_disponiveis_para_split < n_splits:
+        print(f"\n⚠️  AVISO: Poucos meses disponíveis para {n_splits} folds")
+        n_splits = max(2, meses_disponiveis_para_split)
+        print(f"   Ajustando para {n_splits} folds")
+    
+    test_size = meses_disponiveis_para_split // n_splits
+    if test_size < 1:
+        test_size = 1
+    
+    print(f"\n🔢 Estratégia de Split:")
+    print(f"   Tamanho do fold de teste: ~{test_size} meses")
+    print(f"   Treino inicial: {min_train_months} meses")
+    print(f"   Treino cresce incrementalmente a cada fold")
+    
+    splits = []
+    for i in range(n_splits):
+        train_end_idx = min_train_months + (i * test_size) - 1
+        test_end_idx = min(train_end_idx + test_size, n_meses_total - 1)
+        
+        if train_end_idx >= n_meses_total - 1:
+            break
+        
+        train_months = meses_disponiveis[:train_end_idx + 1]
+        test_months = meses_disponiveis[train_end_idx + 1:test_end_idx + 1]
+        
+        if len(test_months) == 0:
+            break
+        
+        splits.append({
+            'fold': i + 1,
+            'train_months': train_months,
+            'test_months': test_months,
+            'train_period': f"{train_months[0].strftime('%Y-%m')} a {train_months[-1].strftime('%Y-%m')}",
+            'test_period': f"{test_months[0].strftime('%Y-%m')} a {test_months[-1].strftime('%Y-%m')}",
+            'n_train_months': len(train_months),
+            'n_test_months': len(test_months)
+        })
+    
+    n_splits_real = len(splits)
+    print(f"\n✅ {n_splits_real} folds criados com sucesso!")
+    
+    results = []
+    all_models = []
+    
+    for split_info in splits:
+        fold = split_info['fold']
+        print(f"\n{'='*80}")
+        print(f"🔄 FOLD {fold}/{n_splits_real}")
+        print(f"{'='*80}")
+        print(f"   📅 Treino:  {split_info['train_period']} ({split_info['n_train_months']} meses)")
+        print(f"   📅 Teste:   {split_info['test_period']} ({split_info['n_test_months']} meses)")
+        
+        df_train_fold = df_model_data[df_model_data['MES'].isin(split_info['train_months'])].copy()
+        df_test_fold = df_model_data[df_model_data['MES'].isin(split_info['test_months'])].copy()
+        
+        n_train = len(df_train_fold)
+        n_test = len(df_test_fold)
+        
+        zeros_train = (df_train_fold['TARGET'] == 0).sum()
+        zeros_test = (df_test_fold['TARGET'] == 0).sum()
+        pct_zeros_train = zeros_train / n_train * 100 if n_train > 0 else 0
+        pct_zeros_test = zeros_test / n_test * 100 if n_test > 0 else 0
+        
+        print(f"\n   📊 Distribuição:")
+        print(f"      Treino: {n_train:,} linhas ({pct_zeros_train:.1f}% zeros)")
+        print(f"      Teste:  {n_test:,} linhas ({pct_zeros_test:.1f}% zeros)")
+        
+        ratio_zeros = pct_zeros_test / pct_zeros_train if pct_zeros_train > 0 else 1.0
+        if ratio_zeros > 1.5:
+            print(f"      ⚠️  Data shift detectado: Teste tem {ratio_zeros:.2f}x mais zeros")
+        elif ratio_zeros < 0.67:
+            print(f"      ⚠️  Data shift detectado: Treino tem {1/ratio_zeros:.2f}x mais zeros")
+        else:
+            print(f"      ✅ Distribuição similar (razão: {ratio_zeros:.2f}x)")
+        
+        try:
+            print(f"\n   🚀 Treinando modelo no fold {fold}...")
+            
+            ensemble_model, y_train_fold, y_pred_train_fold, y_test_fold, y_pred_test_fold = train_abc_two_stage_models(
+                df_train_fold,
+                df_test_fold,
+                features,
+                product_class_map,
+                n_iter_search=20,
+                verbose=False
+            )
+            
+            all_models.append({
+                'fold': fold,
+                'model': ensemble_model,
+                'train_period': split_info['train_period'],
+                'test_period': split_info['test_period']
+            })
+            
+            mae_train = mean_absolute_error(y_train_fold, y_pred_train_fold)
+            mae_test = mean_absolute_error(y_test_fold, y_pred_test_fold)
+            wmape_train = wmape(y_train_fold, y_pred_train_fold)
+            wmape_test = wmape(y_test_fold, y_pred_test_fold)
+            mape_train = mape(y_train_fold, y_pred_train_fold)
+            mape_test = mape(y_test_fold, y_pred_test_fold)
+            
+            mask_zeros_train = (y_train_fold == 0)
+            mask_zeros_test = (y_test_fold == 0)
+            fp_train = (y_pred_train_fold[mask_zeros_train] > 10).sum() / mask_zeros_train.sum() * 100 if mask_zeros_train.sum() > 0 else 0
+            fp_test = (y_pred_test_fold[mask_zeros_test] > 10).sum() / mask_zeros_test.sum() * 100 if mask_zeros_test.sum() > 0 else 0
+            
+            overfitting_ratio = wmape_test / wmape_train if wmape_train > 0 else 0
+            
+            results.append({
+                'Fold': fold,
+                'Train_Period': split_info['train_period'],
+                'Test_Period': split_info['test_period'],
+                'N_Train_Months': split_info['n_train_months'],
+                'N_Test_Months': split_info['n_test_months'],
+                'N_Train_Samples': n_train,
+                'N_Test_Samples': n_test,
+                'Pct_Zeros_Train': pct_zeros_train,
+                'Pct_Zeros_Test': pct_zeros_test,
+                'Ratio_Zeros': ratio_zeros,
+                'MAE_Train': mae_train,
+                'MAE_Test': mae_test,
+                'WMAPE_Train': wmape_train,
+                'WMAPE_Test': wmape_test,
+                'MAPE_Train': mape_train,
+                'MAPE_Test': mape_test,
+                'FP_Train_Pct': fp_train,
+                'FP_Test_Pct': fp_test,
+                'Overfitting_Ratio': overfitting_ratio
+            })
+            
+            print(f"\n   ✅ Fold {fold} concluído!")
+            print(f"      WMAPE: Treino={wmape_train:.2f} | Teste={wmape_test:.2f} | Ratio={overfitting_ratio:.2f}x")
+            
+        except Exception as e:
+            print(f"\n   ❌ Erro no fold {fold}: {e}")
+            continue
+    
+    results_df = pd.DataFrame(results)
+    
+    if len(results_df) == 0:
+        print("\n❌ Nenhum fold foi executado com sucesso!")
+        return None, None, None
+    
+    print("\n" + "="*80)
+    print("📊 RESULTADOS DA VALIDAÇÃO TEMPORAL")
+    print("="*80)
+    
+    print(f"\n📈 Métricas Médias (across {len(results_df)} folds):")
+    print(f"   WMAPE Treino: {results_df['WMAPE_Train'].mean():.4f} ± {results_df['WMAPE_Train'].std():.4f}")
+    print(f"   WMAPE Teste:  {results_df['WMAPE_Test'].mean():.4f} ± {results_df['WMAPE_Test'].std():.4f}")
+    print(f"   MAE Treino:   {results_df['MAE_Train'].mean():.2f} ± {results_df['MAE_Train'].std():.2f}")
+    print(f"   MAE Teste:    {results_df['MAE_Test'].mean():.2f} ± {results_df['MAE_Test'].std():.2f}")
+    print(f"   FP Treino:    {results_df['FP_Train_Pct'].mean():.1f}% ± {results_df['FP_Train_Pct'].std():.1f}%")
+    print(f"   FP Teste:     {results_df['FP_Test_Pct'].mean():.1f}% ± {results_df['FP_Test_Pct'].std():.1f}%")
+    print(f"   Overfitting:  {results_df['Overfitting_Ratio'].mean():.2f}x ± {results_df['Overfitting_Ratio'].std():.2f}x")
+    
+    best_fold_idx = results_df['WMAPE_Test'].idxmin()
+    best_fold = results_df.loc[best_fold_idx]
+    
+    print(f"\n🏆 MELHOR FOLD: Fold {int(best_fold['Fold'])}")
+    print(f"   Teste: {best_fold['Test_Period']}")
+    print(f"   WMAPE Teste: {best_fold['WMAPE_Test']:.4f}")
+    print(f"   Overfitting: {best_fold['Overfitting_Ratio']:.2f}x")
+    
+    worst_fold_idx = results_df['WMAPE_Test'].idxmax()
+    worst_fold = results_df.loc[worst_fold_idx]
+    
+    print(f"\n⚠️  PIOR FOLD: Fold {int(worst_fold['Fold'])}")
+    print(f"   Teste: {worst_fold['Test_Period']}")
+    print(f"   WMAPE Teste: {worst_fold['WMAPE_Test']:.4f}")
+    print(f"   Overfitting: {worst_fold['Overfitting_Ratio']:.2f}x")
+    print(f"   Possível causa: Ratio zeros = {worst_fold['Ratio_Zeros']:.2f}x")
+    
+    print(f"\n📉 ANÁLISE DE TENDÊNCIA TEMPORAL:")
+    first_fold_wmape = results_df.iloc[0]['WMAPE_Test']
+    last_fold_wmape = results_df.iloc[-1]['WMAPE_Test']
+    
+    if last_fold_wmape > first_fold_wmape * 1.2:
+        print(f"   ⚠️  Performance PIORANDO ao longo do tempo")
+        print(f"      Primeiro fold: {first_fold_wmape:.4f}")
+        print(f"      Último fold: {last_fold_wmape:.4f}")
+        print(f"      Degradação: {((last_fold_wmape/first_fold_wmape - 1)*100):.1f}%")
+        print(f"   💡 Sugestão: Modelo pode estar desatualizado. Retreinar periodicamente.")
+    elif last_fold_wmape < first_fold_wmape * 0.8:
+        print(f"   ✅ Performance MELHORANDO ao longo do tempo")
+        print(f"      Primeiro fold: {first_fold_wmape:.4f}")
+        print(f"      Último fold: {last_fold_wmape:.4f}")
+        print(f"      Melhoria: {((1 - last_fold_wmape/first_fold_wmape)*100):.1f}%")
+    else:
+        print(f"   ✅ Performance ESTÁVEL ao longo do tempo")
+        print(f"      Variação: {((last_fold_wmape/first_fold_wmape - 1)*100):.1f}%")
+    
+    print(f"\n📋 TABELA RESUMO (ordenada por WMAPE Teste):")
+    results_display = results_df[['Fold', 'Test_Period', 'WMAPE_Test', 'Overfitting_Ratio', 'Ratio_Zeros']].copy()
+    results_display = results_display.sort_values('WMAPE_Test')
+    results_display['WMAPE_Test'] = results_display['WMAPE_Test'].round(4)
+    results_display['Overfitting_Ratio'] = results_display['Overfitting_Ratio'].round(2)
+    results_display['Ratio_Zeros'] = results_display['Ratio_Zeros'].round(2)
+    print(results_display.to_string(index=False))
+    
+    print("\n" + "="*80)
+    
+    return results_df, int(best_fold['Fold']), all_models
+
+# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
+# ==================================================================================
+# EXECUTAR VALIDAÇÃO TEMPORAL (OPCIONAL - COMENTAR SE NÃO QUISER)
+# ==================================================================================
+
+# Descomentar para executar validação temporal
+"""
+results_cv, best_fold_num, trained_models = time_series_cross_validation(
+    df_model_data=df_model_data,
+    features=features,
+    product_class_map=product_class_map,
+    n_splits=5,
+    min_train_months=24
+)
+
+if results_cv is not None:
+    print(f"\n💡 Insights da Validação Temporal:")
+    print(f"   • WMAPE médio esperado: {results_cv['WMAPE_Test'].mean():.4f} ± {results_cv['WMAPE_Test'].std():.4f}")
+    print(f"   • Overfitting médio: {results_cv['Overfitting_Ratio'].mean():.2f}x")
+"""
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # -------------------------------------------------------------------------------- 
-# GRIDS DE HIPERPARÂMETROS
+# TREINAMENTO COM TWO-STAGE (MODELO FINAL)
 # -------------------------------------------------------------------------------- 
-grid_A = {
-    "n_estimators": [100, 200, 300],
-    "max_depth": [3, 4],
-    "learning_rate": [0.01, 0.03, 0.05],
-    "subsample": [0.6, 0.7],
-    "colsample_bytree": [0.6, 0.7],
-    "min_child_weight": [15, 20, 25],
-    "gamma": [1, 5],
-    "reg_alpha": [1, 10],
-    "reg_lambda": [1, 5]
-}
-
-grid_B = {
-    "n_estimators": [150, 250, 350],
-    "max_depth": [3, 4, 5],
-    "learning_rate": [0.01, 0.03],
-    "subsample": [0.6, 0.7],
-    "colsample_bytree": [0.6, 0.8],
-    "min_child_weight": [10, 15, 20],
-    "gamma": [0.5, 1],
-    "reg_alpha": [0.1, 1.0],
-    "reg_lambda": [0.1, 1.0]
-}
-
-grid_C = {
-    "n_estimators": [50, 100],
-    "max_depth": [2, 3],
-    "learning_rate": [0.05, 0.1],
-    "subsample": [0.7, 0.8],
-    "min_child_weight": [10, 20]
-}
-
-user_defined_param_grid = {
-    'A': grid_A,
-    'B': grid_B,
-    'C': grid_C
-}
-
-# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# -------------------------------------------------------------------------------- 
-# TREINAMENTO
-# -------------------------------------------------------------------------------- 
-ensemble_model, y_train, y_pred_train, y_test, y_pred_test = train_abc_models(
+ensemble_model, y_train, y_pred_train, y_test, y_pred_test = train_abc_two_stage_models(
     df_train,
     df_test,
     features,
     product_class_map,
-    user_param_grid=user_defined_param_grid,
-    n_iter_search=30
+    n_iter_search=30,
+    verbose=True
 )
 
 print("\n" + "="*80)
-print(f"✅ TREINAMENTO ABC CONCLUÍDO")
-print(f"Modelos disponíveis: {list(ensemble_model['models'].keys())}")
+print(f"✅ TREINAMENTO TWO-STAGE CONCLUÍDO")
+print(f"Modelos disponíveis: {list(ensemble_model['classifiers'].keys())}")
 print(f"Total de features utilizadas: {len(features)}")
 print("="*80)
 
-# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# ==================================================================================
-# ANÁLISE DE IMPORTÂNCIA DAS FEATURES
-# ==================================================================================
+# ✅ DIAGNÓSTICO ADICIONAL: Análise de Predições
 print("\n" + "="*80)
-print("📊 ANÁLISE DE IMPORTÂNCIA DAS FEATURES")
+print("🔬 DIAGNÓSTICO: ANÁLISE DE PREDIÇÕES vs REAIS")
 print("="*80)
 
-for classe in ['A', 'B', 'C']:
-    model = ensemble_model['models'].get(classe)
-    if model is None:
-        continue
+for split_name, y_true_split, y_pred_split in [("TREINO", y_train, y_pred_train), ("TESTE", y_test, y_pred_test)]:
+    print(f"\n📊 {split_name}:")
     
-    print(f"\n🔍 Classe {classe}:")
+    mask_zeros = (y_true_split == 0)
+    mask_nonzeros = (y_true_split > 0)
     
-    # Obter importâncias
-    feature_importance = pd.DataFrame({
-        'feature': features,
-        'importance': model.feature_importances_
-    }).sort_values('importance', ascending=False)
+    if mask_zeros.sum() > 0:
+        pred_em_zeros = y_pred_split[mask_zeros]
+        fp_rate = (pred_em_zeros > 10).sum() / len(pred_em_zeros) * 100
+        media_pred_zeros = pred_em_zeros.mean()
+        print(f"   Zeros reais ({mask_zeros.sum():,} casos):")
+        print(f"      Média predita: {media_pred_zeros:.1f}")
+        print(f"      Falsos positivos (pred>10): {fp_rate:.1f}%")
     
-    # Top 10 geral
-    print(f"\n   Top 10 Features Gerais:")
-    for idx, row in feature_importance.head(10).iterrows():
-        print(f"      {row['feature']}: {row['importance']:.4f}")
-    
-    # Features de vendas mais importantes
-    vendas_importance = feature_importance[feature_importance['feature'].str.contains('QUANT_PRED_VENDAS_MODELO')]
-    if not vendas_importance.empty:
-        print(f"\n   Top 5 Features de Vendas Futuras:")
-        for idx, row in vendas_importance.head(5).iterrows():
-            print(f"      {row['feature']}: {row['importance']:.4f}")
+    if mask_nonzeros.sum() > 0:
+        y_true_nonzeros = y_true_split[mask_nonzeros]
+        y_pred_nonzeros = y_pred_split[mask_nonzeros]
+        
+        mae_nonzeros = mean_absolute_error(y_true_nonzeros, y_pred_nonzeros)
+        wmape_nonzeros = wmape(y_true_nonzeros, y_pred_nonzeros)
+        
+        erros = y_pred_nonzeros - y_true_nonzeros
+        subestimacao = (erros < 0).sum() / len(erros) * 100
+        superestimacao = (erros > 0).sum() / len(erros) * 100
+        
+        print(f"   Não-zeros reais ({mask_nonzeros.sum():,} casos):")
+        print(f"      MAE: {mae_nonzeros:.1f} | WMAPE: {wmape_nonzeros:.2%}")
+        print(f"      Subestimação: {subestimacao:.1f}% | Superestimação: {superestimacao:.1f}%")
+        print(f"      Média real: {y_true_nonzeros.mean():.1f} | Média pred: {y_pred_nonzeros.mean():.1f}")
+
+# ⚠️ AVISO SOBRE DATA SHIFT
+print("\n" + "="*80)
+print("⚠️  AVISO: POSSÍVEL DATA SHIFT TEMPORAL DETECTADO")
+print("="*80)
+
+pct_zeros_train = (y_train == 0).sum() / len(y_train) * 100
+pct_zeros_test = (y_test == 0).sum() / len(y_test) * 100
+ratio_shift = pct_zeros_test / pct_zeros_train
+
+print(f"\nDistribuição de zeros (TARGET == 0):")
+print(f"   TREINO: {pct_zeros_train:.1f}%")
+print(f"   TESTE:  {pct_zeros_test:.1f}%")
+print(f"   Razão:  {ratio_shift:.2f}x")
+
+if ratio_shift > 1.5:
+    print(f"\n❌ ALERTA: Teste tem {ratio_shift:.1f}x mais zeros que treino!")
+    print("   Possíveis causas:")
+    print("      1. Sazonalidade: Meses de teste são período de baixa demanda")
+    print("      2. Split temporal enviesado: Últimos meses != primeiros meses")
+    print("      3. Mudança de padrão: Comportamento mudou ao longo do tempo")
+    print("\n   Recomendações:")
+    print("      • Validar com meses aleatórios (não apenas últimos)")
+    print("      • Adicionar features sazonais (trimestre, mês, etc.)")
+    print("      • Considerar usar todo o histórico com CV temporal")
+elif ratio_shift < 0.67:
+    print(f"\n⚠️  AVISO: Treino tem mais zeros que teste (razão inversa)")
+else:
+    print(f"\n✅ Distribuição similar entre treino e teste")
+
+print("="*80)
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # -------------------------------------------------------------------------------- 
 # CRIAR DATAFRAMES DE PREDIÇÕES
 # -------------------------------------------------------------------------------- 
-print("\n" + "="*80)
-print("📊 CRIANDO DATAFRAMES DE PREDIÇÕES")
-print("="*80)
+print("\n📊 Criando DataFrames de predições...")
 
-# Treino
 df_pred_train = df_train[['COMPONENT', 'COD_FORNE', 'MES', 'TARGET']].copy()
 df_pred_train['PREDITO'] = y_pred_train
 df_pred_train['TIPO'] = 'treino'
 df_pred_train['CLASSE_ABC'] = df_pred_train['COMPONENT'].map(product_class_map).fillna('C')
 
-# Teste
 df_pred_test = df_test[['COMPONENT', 'COD_FORNE', 'MES', 'TARGET']].copy()
 df_pred_test['PREDITO'] = y_pred_test
 df_pred_test['TIPO'] = 'teste'
 df_pred_test['CLASSE_ABC'] = df_pred_test['COMPONENT'].map(product_class_map).fillna('C')
 
-# Combinar
 df_predictions_compras = pd.concat([df_pred_train, df_pred_test], ignore_index=True)
-
-# Reordenar
-cols_order = [
-    'COMPONENT', 'COD_FORNE', 'MES', 'TIPO', 'CLASSE_ABC',
-    'TARGET', 'PREDITO'
-]
-df_predictions_compras = df_predictions_compras[cols_order]
 df_predictions_compras['PREDITO'] = np.ceil(df_predictions_compras['PREDITO'])
 
-print(f"\n   ✅ Predições de Compras: {df_predictions_compras.shape}")
-print(f"   Período: {df_predictions_compras['MES'].min()} a {df_predictions_compras['MES'].max()}")
-print(f"   COMPONENTs únicos: {df_predictions_compras['COMPONENT'].nunique()}")
-print(f"   Fornecedores únicos: {df_predictions_compras['COD_FORNE'].nunique()}")
+print(f"   ✅ Predições: {df_predictions_compras.shape}")
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # ==================================================================================
-# FUNÇÃO PARA FORECAST
+# FUNÇÃO PARA FORECAST RECURSIVO
 # ==================================================================================
 
 def recursive_prediction(df_base, model, n_months, base_month, product_class_map):
-    """
-    Previsão recursiva multi-HORIZONte.
-    
-    Args:
-        df_base: df_final (JÁ TEM todas as features calculadas)
-        model: Modelo treinado (ensemble ABC)
-        n_months: Número de meses a prever
-        base_month: Último mês com dados reais
-        product_class_map: Mapeamento COMPONENT -> Classe ABC
-    """
+    """Previsão recursiva multi-horizonte."""
     
     print(f"🔮 Previsão recursiva iniciada")
     print(f"    Base: {base_month}")
-    print(f"    HORIZONte: {n_months} meses")
+    print(f"    Horizonte: {n_months} meses")
     
-    # Copiar base completa
     df_work = df_base.copy()
     df_work['MES'] = pd.to_datetime(df_work['MES'])
     
-    # Lista para output
     all_predictions = []
-    
-    # Mês atual
     current_month = base_month
     
-    # Loop de previsão
     for HORIZON in range(1, n_months + 1):
         target_month = current_month + pd.DateOffset(months=1)
         
-        print(f"\n    📅 HORIZONte {HORIZON}/{n_months}: Prevendo {target_month.strftime('%Y-%m')}")
+        print(f"\n    📅 Horizonte {HORIZON}/{n_months}: Prevendo {target_month.strftime('%Y-%m')}")
         
-        # 1. Filtrar linhas do mês atual (base para previsão)
         df_current = df_work[df_work['MES'] == current_month].copy()
         
         if len(df_current) == 0:
@@ -868,7 +1224,6 @@ def recursive_prediction(df_base, model, n_months, base_month, product_class_map
             current_month = target_month
             continue
         
-        # 2. Garantir que tem histórico suficiente
         df_current = df_current.dropna(subset=['HISTORICO_VENDAS_LAG12'])
         
         if len(df_current) == 0:
@@ -876,95 +1231,67 @@ def recursive_prediction(df_base, model, n_months, base_month, product_class_map
             current_month = target_month
             continue
         
-        # 3. Garantir que CLASSE_ABC existe
         if 'CLASSE_ABC' not in df_current.columns:
             df_current['CLASSE_ABC'] = df_current['COMPONENT'].map(product_class_map).fillna('C')
         
-        # 4. Garantir que todas as features do modelo existem
         for feat in model['feature_names']:
             if feat not in df_current.columns:
                 df_current[feat] = 0
         
-        # 5. Preencher NaNs
         df_current[model['feature_names']] = df_current[model['feature_names']].fillna(0)
         
-        # 6. FAZER PREVISÃO
         try:
             predictions = predict_ensemble(model, df_current)
             predictions = np.maximum(predictions, 0)
-            
             print(f"         ✅ {len(predictions):,} previsões | Volume: {predictions.sum():,.0f}")
-            
         except Exception as e:
             print(f"         ❌ Erro: {e}")
             raise
         
-        # 7. CRIAR NOVA LINHA PARA O MÊS FUTURO
         df_next = df_current.copy()
         df_next['MES'] = target_month
         
-        # 8. SHIFTAR OS LAGS (a quantidade atual vira LAG1)
-        df_next['HISTORICO_VENDAS_LAG12'] = df_next['HISTORICO_VENDAS_LAG11']
-        df_next['HISTORICO_VENDAS_LAG11'] = df_next['HISTORICO_VENDAS_LAG10']
-        df_next['HISTORICO_VENDAS_LAG10'] = df_next['HISTORICO_VENDAS_LAG9']
-        df_next['HISTORICO_VENDAS_LAG9'] = df_next['HISTORICO_VENDAS_LAG8']
-        df_next['HISTORICO_VENDAS_LAG8'] = df_next['HISTORICO_VENDAS_LAG7']
-        df_next['HISTORICO_VENDAS_LAG7'] = df_next['HISTORICO_VENDAS_LAG6']
-        df_next['HISTORICO_VENDAS_LAG6'] = df_next['HISTORICO_VENDAS_LAG5']
-        df_next['HISTORICO_VENDAS_LAG5'] = df_next['HISTORICO_VENDAS_LAG4']
-        df_next['HISTORICO_VENDAS_LAG4'] = df_next['HISTORICO_VENDAS_LAG3']
-        df_next['HISTORICO_VENDAS_LAG3'] = df_next['HISTORICO_VENDAS_LAG2']
-        df_next['HISTORICO_VENDAS_LAG2'] = df_next['HISTORICO_VENDAS_LAG1']
+        # Shiftar LAGs
+        for i in range(12, 1, -1):
+            df_next[f'HISTORICO_VENDAS_LAG{i}'] = df_next[f'HISTORICO_VENDAS_LAG{i-1}']
         df_next['HISTORICO_VENDAS_LAG1'] = df_current['QUANTIDADE'].values
         
-        # 9. ATUALIZAR QUANTIDADE COM A PREVISÃO
         df_next['QUANTIDADE'] = predictions
         
-        # 10. RECALCULAR FEATURES DERIVADAS
-        
-        # Diffs
+        # Recalcular features derivadas
         df_next['diff_1'] = df_next['QUANTIDADE'] - df_next['HISTORICO_VENDAS_LAG1']
         df_next['diff_2'] = df_next['HISTORICO_VENDAS_LAG1'] - df_next['HISTORICO_VENDAS_LAG2']
         df_next['diff_3'] = df_next['HISTORICO_VENDAS_LAG2'] - df_next['HISTORICO_VENDAS_LAG3']
         
-        # Rolling means
         df_next['rolling_mean_3'] = df_next[['HISTORICO_VENDAS_LAG1', 'HISTORICO_VENDAS_LAG2', 'HISTORICO_VENDAS_LAG3']].mean(axis=1)
         df_next['rolling_mean_6'] = df_next[['HISTORICO_VENDAS_LAG1', 'HISTORICO_VENDAS_LAG2', 'HISTORICO_VENDAS_LAG3', 
                                               'HISTORICO_VENDAS_LAG4', 'HISTORICO_VENDAS_LAG5', 'HISTORICO_VENDAS_LAG6']].mean(axis=1)
         df_next['rolling_mean_12'] = df_next[[f'HISTORICO_VENDAS_LAG{i}' for i in range(1, 13)]].mean(axis=1)
         
-        # Rolling stds
         df_next['rolling_std_3'] = df_next[['HISTORICO_VENDAS_LAG1', 'HISTORICO_VENDAS_LAG2', 'HISTORICO_VENDAS_LAG3']].std(axis=1)
         df_next['rolling_std_6'] = df_next[['HISTORICO_VENDAS_LAG1', 'HISTORICO_VENDAS_LAG2', 'HISTORICO_VENDAS_LAG3', 
                                              'HISTORICO_VENDAS_LAG4', 'HISTORICO_VENDAS_LAG5', 'HISTORICO_VENDAS_LAG6']].std(axis=1)
         df_next['rolling_std_12'] = df_next[[f'HISTORICO_VENDAS_LAG{i}' for i in range(1, 13)]].std(axis=1)
         
-        # Rolling max
         df_next['rolling_max_3'] = df_next[['HISTORICO_VENDAS_LAG1', 'HISTORICO_VENDAS_LAG2', 'HISTORICO_VENDAS_LAG3']].max(axis=1)
         df_next['rolling_max_6'] = df_next[['HISTORICO_VENDAS_LAG1', 'HISTORICO_VENDAS_LAG2', 'HISTORICO_VENDAS_LAG3', 
                                              'HISTORICO_VENDAS_LAG4', 'HISTORICO_VENDAS_LAG5', 'HISTORICO_VENDAS_LAG6']].max(axis=1)
         df_next['rolling_max_12'] = df_next[[f'HISTORICO_VENDAS_LAG{i}' for i in range(1, 13)]].max(axis=1)
         
-        # Rolling min
         df_next['rolling_min_3'] = df_next[['HISTORICO_VENDAS_LAG1', 'HISTORICO_VENDAS_LAG2', 'HISTORICO_VENDAS_LAG3']].min(axis=1)
         df_next['rolling_min_6'] = df_next[['HISTORICO_VENDAS_LAG1', 'HISTORICO_VENDAS_LAG2', 'HISTORICO_VENDAS_LAG3', 
                                              'HISTORICO_VENDAS_LAG4', 'HISTORICO_VENDAS_LAG5', 'HISTORICO_VENDAS_LAG6']].min(axis=1)
         df_next['rolling_min_12'] = df_next[[f'HISTORICO_VENDAS_LAG{i}' for i in range(1, 13)]].min(axis=1)
         
-        # Lead time lag
         df_next['lead_time_lag_1'] = df_current['LEAD_TIME'].values
-        
-        # Features temporais
         df_next['quarter'] = df_next['MES'].dt.quarter
         df_next['quarter_start'] = df_next['MES'].dt.is_quarter_start.astype(int)
         df_next['quarter_end'] = df_next['MES'].dt.is_quarter_end.astype(int)
         
-        # One-hot do mês (zerar todos e ativar o correto)
         target_month_num = target_month.month
         for m in range(1, 13):
             df_next[f'month_{m}'] = int(m == target_month_num)
         
-        # Limpar infinitos e NaNs
         numeric_cols = df_next.select_dtypes(include=[np.number]).columns
         for col in numeric_cols:
             df_next[col] = df_next[col].replace([np.inf, -np.inf], np.nan)
@@ -973,17 +1300,13 @@ def recursive_prediction(df_base, model, n_months, base_month, product_class_map
         for col in rolling_cols:
             df_next[col] = df_next[col].fillna(0)
         
-        # 11. ADICIONAR AO HISTÓRICO
         df_work = pd.concat([df_work, df_next], ignore_index=True)
         
-        # 12. GUARDAR PREVISÃO PARA OUTPUT
         df_pred = df_next[['COMPONENT', 'COD_FORNE', 'MES', 'QUANTIDADE', 'LEAD_TIME', 'CLASSE_ABC']].copy()
         all_predictions.append(df_pred)
         
-        # 13. AVANÇAR MÊS
         current_month = target_month
     
-    # Combinar previsões
     if not all_predictions:
         print("\n⚠️  Nenhuma previsão gerada!")
         return pd.DataFrame()
@@ -997,33 +1320,6 @@ def recursive_prediction(df_base, model, n_months, base_month, product_class_map
     
     return df_forecast
 
-
-def predict_ensemble(ensemble_model, df_features):
-    """
-    Faz previsões usando o modelo ABC treinado.
-    """
-    
-    features = ensemble_model['feature_names']
-    X = df_features[features].fillna(0).astype('float64')
-    
-    predictions = np.zeros(len(df_features))
-    
-    for classe in ['A', 'B', 'C']:
-        mask = (df_features['CLASSE_ABC'] == classe)
-        if mask.sum() == 0:
-            continue
-        
-        X_classe = X.loc[mask]
-        model_classe = ensemble_model['models'][classe]
-        
-        if model_classe is None:
-            predictions[mask.values] = 0.0
-        else:
-            pred_classe = model_classe.predict(X_classe)
-            predictions[mask.values] = pred_classe
-    
-    return np.maximum(predictions, 0)
-
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # ==================================================================================
 # EXECUTAR PREVISÃO RECURSIVA (12 MESES)
@@ -1032,106 +1328,41 @@ print("\n" + "="*80)
 print("🔮 INICIANDO PREVISÃO RECURSIVA MULTI-HORIZONTE")
 print("="*80)
 
-n_HORIZONs = 12
+n_HORIZONS = 12
 base_date = df_final['MES'].max()
 
-print(f"\n📅 Configuração:")
-print(f"    Data base: {base_date}")
-print(f"    HORIZONte: {n_HORIZONs} meses")
-print(f"    COMPONENTs: {df_final['COMPONENT'].nunique()}")
-print(f"    Fornecedores: {df_final['COD_FORNE'].nunique()}")
-
-# Executar
 df_forecast_compras = recursive_prediction(
     df_base=df_final,
     model=ensemble_model,
-    n_months=n_HORIZONs,
+    n_months=n_HORIZONS,
     base_month=base_date,
     product_class_map=product_class_map
 )
 
-print("\n" + "="*80)
-print("✅ PREVISÃO CONCLUÍDA!")
-print("="*80)
-
-if not df_forecast_compras.empty:
-    print(f"\n📊 Resumo do Forecast:")
-    print(f"    Total de registros: {len(df_forecast_compras):,}")
-    print(f"    COMPONENTs únicos: {df_forecast_compras['COMPONENT'].nunique()}")
-    print(f"    Fornecedores únicos: {df_forecast_compras['COD_FORNE'].nunique()}")
-    print(f"    Período: {df_forecast_compras['MES'].min()} até {df_forecast_compras['MES'].max()}")
-    print(f"    Volume total previsto: {df_forecast_compras['QUANTIDADE'].sum():,.0f}")
-    
-    # Estatísticas por classe
-    print("\n📈 Distribuição do Forecast por Classe ABC:")
-    for classe in ['A', 'B', 'C']:
-        df_classe = df_forecast_compras[df_forecast_compras['CLASSE_ABC'] == classe]
-        if len(df_classe) > 0:
-            volume = df_classe['QUANTIDADE'].sum()
-            pct = volume / df_forecast_compras['QUANTIDADE'].sum() * 100
-            n_components = df_classe['COMPONENT'].nunique()
-            
-            print(f"    Classe {classe}:")
-            print(f"        COMPONENTs: {n_components}")
-            print(f"        Volume: {volume:,.0f} ({pct:.1f}%)")
-    
-    # Amostra
-    print("\n📋 Primeiras previsões:")
-    print(df_forecast_compras.head(10))
-else:
-    print("\n⚠️  Nenhuma previsão foi gerada. Verifique os dados de entrada.")
+print("\n✅ PREVISÃO CONCLUÍDA!")
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 def expandir_custo_por_mes(df, data_final):
-    """
-    Expande MES para cada COMPONENT + COD_FORNE até 'data_final',
-    criando linhas faltantes e preenchendo MOEDA e PRECO_UNIT
-    com forward-fill (valor do mês anterior).
-    
-    Parâmetros:
-        df : DataFrame contendo colunas:
-             COMPONENT, COD_FORNE, MES, MOEDA, PRECO_UNIT
-        data_final : str ou datetime
-             Exemplo: '2025-12-01'
-    
-    Retorno:
-        DataFrame expandido.
-    """
-
-    # Garantir datetime
+    """Expande MES para cada COMPONENT + COD_FORNE até 'data_final'"""
     df = df.copy()
     df['MES'] = pd.to_datetime(df['MES'])
     data_final = pd.to_datetime(data_final)
 
     def expandir_grupo(g):
-        # Ordena por MES
         g = g.sort_values('MES')
-
-        # Se houver MES duplicado no mesmo COMPONENT+COD_FORNE, mantém só a última
         g = g.drop_duplicates(subset='MES', keep='last')
-
-        # Define o range do primeiro MES até data_final
-        full_idx = pd.date_range(
-            g['MES'].min(), 
-            data_final, 
-            freq='MS'  # Month Start
-        )
-
-        # Coloca MES como índice e expande
+        
+        full_idx = pd.date_range(g['MES'].min(), data_final, freq='MS')
         g = g.set_index('MES').reindex(full_idx)
         g.index.name = 'MES'
-
-        # Preenche COMPONENT e COD_FORNE (fixos no grupo)
+        
         g['COMPONENT'] = g['COMPONENT'].ffill().bfill()
         g['COD_FORNE'] = g['COD_FORNE'].ffill().bfill()
-
-        # Preenche MOEDA e PRECO_UNIT com valores do mês anterior
         g['MOEDA'] = g['MOEDA'].ffill()
         g['PRECO_UNIT'] = g['PRECO_UNIT'].ffill()
-
+        
         return g
 
-    # Aplica a expansão por grupo
     df_expanded = (
         df
         .groupby(['COMPONENT', 'COD_FORNE'], group_keys=False)
@@ -1140,7 +1371,6 @@ def expandir_custo_por_mes(df, data_final):
     )
 
     return df_expanded
-
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 df_forecast_compras['QUANTIDADE'] = np.ceil(df_forecast_compras['QUANTIDADE'])
@@ -1151,7 +1381,6 @@ df_hist_recent = expandir_custo_por_mes(
     data_final=max_month
 )
 
-# 5) Merge no df_forecast_compras
 df_forecast_compras = df_forecast_compras.merge(
     df_hist_recent,
     on=['COMPONENT', 'COD_FORNE', 'MES'],
@@ -1162,33 +1391,26 @@ df_forecast_compras = df_forecast_compras[[*df_forecast_compras.drop(columns='CL
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # ==================================================================================
-# COMPENSAÇÃO INTELIGENTE - MOVIMENTAÇÃO PROPORCIONAL DE QUANTIDADES
+# COMPENSAÇÃO DE FATURAMENTO MÍNIMO
 # ==================================================================================
 def verificar_e_compensar_faturamento_minimo(df_forecast, df_faturamento_minimo, n_meses_output=3):
-    """
-    Compensa faturamento movendo COMPONENTES INTEIROS.
-    Trabalha com PRECO_UNIT e calcula PRECO_TOTAL = QUANTIDADE * PRECO_UNIT.
-    """
+    """Compensa faturamento movendo COMPONENTES INTEIROS."""
     
     print("\n" + "="*80)
-    print(f"💰 COMPENSAÇÃO INTELIGENTE V3 - OUTPUT: {n_meses_output} MESES")
+    print(f"💰 COMPENSAÇÃO INTELIGENTE - OUTPUT: {n_meses_output} MESES")
     print("="*80)
     
-    # 1. PREPARAR DADOS
     df_work = df_forecast.copy()
     df_work['MES'] = pd.to_datetime(df_work['MES'])
     df_work['COD_FORNE'] = df_work['COD_FORNE'].astype(str)
     
-    # ✅ CALCULAR PRECO_TOTAL inicial
     if 'PRECO_TOTAL' not in df_work.columns:
         df_work['PRECO_TOTAL'] = (df_work['QUANTIDADE'] * df_work['PRECO_UNIT']).round(2)
     
     meses_unicos = sorted(df_work['MES'].unique())
     meses_output = meses_unicos[:n_meses_output]
     
-    print(f"\n📅 Output: {n_meses_output} meses | Compensação: {len(meses_unicos)} meses")
-    
-    # 2. IDENTIFICAR COLUNAS FATURAMENTO
+    # Identificar colunas faturamento
     col_map = {col.lower(): col for col in df_faturamento_minimo.columns}
     
     col_forn_fat = None
@@ -1207,17 +1429,14 @@ def verificar_e_compensar_faturamento_minimo(df_forecast, df_faturamento_minimo,
         print("⚠️ ERRO: Colunas não encontradas")
         return None, None
     
-    # 3. MAPA DE FATURAMENTO
     df_fat = df_faturamento_minimo[[col_forn_fat, col_fat]].copy()
     df_fat = df_fat.rename(columns={col_forn_fat: 'COD_FORNE', col_fat: 'FATURAMENTO_MINIMO'})
     df_fat['COD_FORNE'] = df_fat['COD_FORNE'].astype(str)
     faturamento_map = df_fat.set_index('COD_FORNE')['FATURAMENTO_MINIMO'].to_dict()
     
-    # 4. PRIORIDADES ABC
     prioridade_abc = {'A': 1, 'B': 2, 'C': 3}
     
-    # 5. COMPENSAÇÃO INTELIGENTE
-    print("\n📊 Aplicando compensação (componentes inteiros)...")
+    print("\n📊 Aplicando compensação...")
     
     fornecedores = df_work['COD_FORNE'].unique()
     movimentos = []
@@ -1231,10 +1450,7 @@ def verificar_e_compensar_faturamento_minimo(df_forecast, df_faturamento_minimo,
         df_forn = df_work[df_work['COD_FORNE'] == fornecedor].copy()
         meses_forn = sorted(df_forn['MES'].unique())
         
-        # Processar apenas os N primeiros meses
         for mes_atual in meses_forn[:n_meses_output]:
-            
-            # Calcular valor atual
             mask_atual = (df_work['COD_FORNE'] == fornecedor) & (df_work['MES'] == mes_atual)
             valor_atual = df_work.loc[mask_atual, 'PRECO_TOTAL'].sum()
             
@@ -1242,26 +1458,21 @@ def verificar_e_compensar_faturamento_minimo(df_forecast, df_faturamento_minimo,
                 continue
             
             deficit = fat_min - valor_atual
-            
-            # Buscar em meses futuros
             meses_futuros = [m for m in meses_forn if m > mes_atual]
             
             for mes_futuro in meses_futuros:
                 if deficit <= 0.01:
                     break
                 
-                # Pegar componentes do mês futuro
                 mask_futuro = (df_work['COD_FORNE'] == fornecedor) & (df_work['MES'] == mes_futuro)
                 df_futuro = df_work[mask_futuro].copy()
                 
                 if df_futuro.empty:
                     continue
                 
-                # 🎯 ORDENAR: ABC (A>B>C), depois por valor (maior>menor)
                 df_futuro['PRIORIDADE'] = df_futuro['CLASSE_ABC'].map(prioridade_abc).fillna(3)
                 df_futuro = df_futuro.sort_values(['PRIORIDADE', 'PRECO_TOTAL'], ascending=[True, False])
                 
-                # 🚀 MOVER COMPONENTES INTEIROS
                 for idx, row in df_futuro.iterrows():
                     if deficit <= 0.01:
                         break
@@ -1270,29 +1481,20 @@ def verificar_e_compensar_faturamento_minimo(df_forecast, df_faturamento_minimo,
                     preco_unit = row['PRECO_UNIT']
                     valor_total = row['PRECO_TOTAL']
                     
-                    # Decidir: mover inteiro ou fazer split
                     if valor_total <= deficit + 0.01:
-                        # ✅ MOVER COMPONENTE INTEIRO
                         qtd_mover = qtd_total
                         valor_mover = valor_total
-                        
-                        # Marcar para remover
                         indices_para_remover.append(idx)
                     else:
-                        # ✅ SPLIT - calcular quantidade necessária
                         qtd_necessaria = deficit / preco_unit if preco_unit > 0 else 0
                         qtd_mover = np.ceil(qtd_necessaria)
                         qtd_mover = min(qtd_mover, qtd_total)
-                        
-                        # ✅ CALCULAR VALOR com 2 casas decimais
                         valor_mover = round(qtd_mover * preco_unit, 2)
                         
-                        # Atualizar mês futuro (reduzir)
                         nova_qtd_futuro = qtd_total - qtd_mover
                         df_work.at[idx, 'QUANTIDADE'] = nova_qtd_futuro
                         df_work.at[idx, 'PRECO_TOTAL'] = round(nova_qtd_futuro * preco_unit, 2)
                     
-                    # ADICIONAR NO MÊS ATUAL
                     mask_existe = (
                         (df_work['COD_FORNE'] == fornecedor) & 
                         (df_work['MES'] == mes_atual) & 
@@ -1300,14 +1502,11 @@ def verificar_e_compensar_faturamento_minimo(df_forecast, df_faturamento_minimo,
                     )
                     
                     if mask_existe.any():
-                        # Já existe - SOMAR
                         idx_existe = df_work[mask_existe].index[0]
                         nova_qtd = df_work.at[idx_existe, 'QUANTIDADE'] + qtd_mover
                         df_work.at[idx_existe, 'QUANTIDADE'] = nova_qtd
-                        # ✅ RECALCULAR PRECO_TOTAL com 2 casas decimais
                         df_work.at[idx_existe, 'PRECO_TOTAL'] = round(nova_qtd * preco_unit, 2)
                     else:
-                        # Criar nova linha
                         nova_linha = {
                             'COMPONENT': row['COMPONENT'],
                             'COD_FORNE': fornecedor,
@@ -1321,7 +1520,6 @@ def verificar_e_compensar_faturamento_minimo(df_forecast, df_faturamento_minimo,
                         }
                         df_work = pd.concat([df_work, pd.DataFrame([nova_linha])], ignore_index=True)
                     
-                    # Registrar movimento
                     movimentos.append({
                         'COD_FORNE': fornecedor,
                         'COMPONENT': row['COMPONENT'],
@@ -1335,42 +1533,33 @@ def verificar_e_compensar_faturamento_minimo(df_forecast, df_faturamento_minimo,
                     
                     deficit -= valor_mover
     
-    # 6. REMOVER COMPONENTES MOVIDOS INTEIROS
     if indices_para_remover:
         df_work = df_work.drop(index=indices_para_remover).reset_index(drop=True)
     
-    # 7. REMOVER QUANTIDADES ZERO
     df_work = df_work[df_work['QUANTIDADE'] > 0.01].copy()
     
-    # 8. ARREDONDAR QUANTIDADES E RECALCULAR PREÇOS
     print(f"\n🔢 Arredondando quantidades...")
     df_work['QUANTIDADE'] = np.ceil(df_work['QUANTIDADE'])
-    
-    # ✅ RECALCULAR PRECO_TOTAL com quantidades arredondadas (2 casas decimais)
     df_work['PRECO_TOTAL'] = (df_work['QUANTIDADE'] * df_work['PRECO_UNIT']).round(2)
     
-    # 9. FILTRAR APENAS OS N PRIMEIROS MESES
     print(f"\n✂️  Filtrando {n_meses_output} primeiros meses...")
     df_output = df_work[df_work['MES'].isin(meses_output)].copy()
     
-    # 10. AGREGAR (caso tenha duplicatas)
     print(f"\n📊 Agregando...")
     df_output_final = df_output.groupby(
         ['COMPONENT', 'COD_FORNE', 'MES'], 
         as_index=False
     ).agg({
         'QUANTIDADE': 'sum',
-        'PRECO_UNIT': 'first',  # Preço unitário permanece o mesmo
+        'PRECO_UNIT': 'first',
         'LEAD_TIME': 'first',
         'MOEDA': 'first',
         'CLASSE_ABC': 'first'
     })
     
-    # ✅ RECALCULAR PRECO_TOTAL após agregação (2 casas decimais)
     df_output_final['QUANTIDADE'] = np.ceil(df_output_final['QUANTIDADE'])
     df_output_final['PRECO_TOTAL'] = (df_output_final['QUANTIDADE'] * df_output_final['PRECO_UNIT']).round(2)
     
-    # ✅ ORDENAR COLUNAS
     df_output_final = df_output_final[[
         'COMPONENT', 'COD_FORNE', 'MES', 'QUANTIDADE', 
         'LEAD_TIME', 'MOEDA', 'PRECO_TOTAL', 'CLASSE_ABC'
@@ -1379,103 +1568,11 @@ def verificar_e_compensar_faturamento_minimo(df_forecast, df_faturamento_minimo,
     df_output_final = df_output_final.sort_values(['COD_FORNE', 'MES', 'COMPONENT'])
     
     print(f"   ✅ Linhas finais: {len(df_output_final):,}")
+    print(f"\n✅ Compensação concluída! Movimentos: {len(movimentos)}")
     
-    # 11. CRIAR RESUMO
-    df_resumo = df_output_final.groupby(['COD_FORNE', 'MES']).agg({
-        'PRECO_TOTAL': 'sum',
-        'COMPONENT': 'count'
-    }).reset_index()
-    
-    df_resumo = df_resumo.rename(columns={
-        'PRECO_TOTAL': 'VALOR_FINAL',
-        'COMPONENT': 'N_COMPONENTES'
-    })
-    
-    df_resumo['COD_FORNE'] = df_resumo['COD_FORNE'].astype(str)
-    df_resumo['FATURAMENTO_MINIMO'] = df_resumo['COD_FORNE'].map(faturamento_map).fillna(0)
-    
-    # Valores originais
-    df_original = df_forecast.copy()
-    df_original['MES'] = pd.to_datetime(df_original['MES'])
-    df_original['COD_FORNE'] = df_original['COD_FORNE'].astype(str)
-    
-    # ✅ CALCULAR PRECO_TOTAL original se não existir
-    if 'PRECO_TOTAL' not in df_original.columns:
-        df_original['PRECO_TOTAL'] = (df_original['QUANTIDADE'] * df_original['PRECO_UNIT']).round(2)
-    
-    df_orig_valores = df_original[df_original['MES'].isin(meses_output)].groupby(['COD_FORNE', 'MES'])['PRECO_TOTAL'].sum().reset_index()
-    df_orig_valores = df_orig_valores.rename(columns={'PRECO_TOTAL': 'VALOR_ORIGINAL'})
-    
-    df_resumo = pd.merge(df_resumo, df_orig_valores, on=['COD_FORNE', 'MES'], how='left')
-    df_resumo['VALOR_ORIGINAL'] = df_resumo['VALOR_ORIGINAL'].fillna(0)
-    df_resumo['VALOR_RECEBIDO'] = (df_resumo['VALOR_FINAL'] - df_resumo['VALOR_ORIGINAL']).clip(lower=0)
-    
-    # Status
-    df_resumo['ATENDE_MINIMO_ORIGINAL'] = df_resumo['VALOR_ORIGINAL'] >= df_resumo['FATURAMENTO_MINIMO']
-    df_resumo['ATENDE_MINIMO_FINAL'] = df_resumo['VALOR_FINAL'] >= df_resumo['FATURAMENTO_MINIMO']
-    df_resumo['STATUS'] = df_resumo.apply(
-        lambda r: 'Atende' if r['ATENDE_MINIMO_FINAL'] 
-                  else f"Falta R${r['FATURAMENTO_MINIMO'] - r['VALOR_FINAL']:,.2f}",
-        axis=1
-    )
-    
-    df_resumo = df_resumo[[
-        'COD_FORNE', 'MES', 'N_COMPONENTES',
-        'VALOR_ORIGINAL', 'VALOR_RECEBIDO', 'VALOR_FINAL',
-        'FATURAMENTO_MINIMO', 'ATENDE_MINIMO_ORIGINAL', 'ATENDE_MINIMO_FINAL', 'STATUS'
-    ]]
-    
-    # 12. ESTATÍSTICAS
-    print("\n" + "="*80)
-    print("📊 ESTATÍSTICAS")
-    print("="*80)
-    print(f"   Movimentos realizados: {len(movimentos)}")
-    
-    n_orig = (~df_resumo['ATENDE_MINIMO_ORIGINAL']).sum()
-    n_final = (~df_resumo['ATENDE_MINIMO_FINAL']).sum()
-    n_resolvidos = ((~df_resumo['ATENDE_MINIMO_ORIGINAL']) & df_resumo['ATENDE_MINIMO_FINAL']).sum()
-    
-    print(f"   Antes: {n_orig} não atingiam | Resolvidos: {n_resolvidos} | Restam: {n_final}")
-    
-    if n_orig > 0:
-        print(f"   Taxa de resolução: {(n_resolvidos/n_orig)*100:.1f}%")
-    
-    # Status por mês
-    print(f"\n   🎯 Status por mês:")
-    for mes in meses_output:
-        mask = df_resumo['MES'] == mes
-        atende = df_resumo[mask & df_resumo['ATENDE_MINIMO_FINAL']].shape[0]
-        total = df_resumo[mask].shape[0]
-        if total > 0:
-            print(f"      {pd.to_datetime(mes).strftime('%Y-%m')}: {atende}/{total} ({atende/total*100:.1f}%)")
-    
-    # Tipo de movimentos
-    if movimentos:
-        df_mov = pd.DataFrame(movimentos)
-        n_inteiros = (df_mov['TIPO'] == 'INTEIRO').sum()
-        n_parciais = (df_mov['TIPO'] == 'PARCIAL').sum()
-        print(f"\n   📦 Tipo de movimentos:")
-        print(f"      Componentes inteiros: {n_inteiros}")
-        print(f"      Parciais (split): {n_parciais}")
-        
-        # Por classe ABC
-        print(f"\n   📦 Movimentos por classe ABC:")
-        for classe in ['A', 'B', 'C']:
-            mov_classe = df_mov[df_mov['CLASSE_ABC'] == classe]
-            if not mov_classe.empty:
-                qtd = mov_classe['QUANTIDADE_MOVIDA'].sum()
-                valor = mov_classe['VALOR_MOVIDO'].sum()
-                print(f"      Classe {classe}: {len(mov_classe)} movimentos | "
-                      f"Qtd: {qtd:,.0f} | R$ {valor:,.2f}")
-    
-    print("\n" + "="*80)
-    
-    return df_resumo, df_output_final
+    return None, df_output_final
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# ==================================================================================
-# EXECUTAR ANÁLISE DE FATURAMENTO MINIMO
-# ==================================================================================
 df_faturamento_minimo = Helpers.getEntityData(context, 'faturamento_minimo').rename(columns={
     'Faturamento_M_nimo': 'FATURAMENTO_MINIMO',
     'cod._Fornecedor': 'COD_FORNE',
@@ -1485,10 +1582,6 @@ df_analise_faturamento, df_forecast_compras = verificar_e_compensar_faturamento_
     df_faturamento_minimo=df_faturamento_minimo,
     df_forecast=df_forecast_compras
 )
-
-if df_analise_faturamento is not None:
-    print("\n📋 Amostra do RESUMO:")
-    print(df_analise_faturamento.head(20))
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # Adicionando os resultados da predicao
@@ -1504,7 +1597,6 @@ df_model_data = pd.merge(
     'PREDITO':'QUANT_PREDITA'
     })
 
-# Adicionando os custos
 df_model_data = pd.merge(
     df_model_data, 
     df_hist_recent[['COMPONENT', 'COD_FORNE', 'MES', 'MOEDA', 'PRECO_UNIT']], 
@@ -1512,7 +1604,6 @@ df_model_data = pd.merge(
     how='left'
     )
 
-# Adicionando os custos
 df_model_data['PRECO_TARGET'] = df_model_data['QUANT_TARGET'] * df_model_data['PRECO_UNIT']
 df_model_data['PRECO_REALIZADO'] = df_model_data['QUANT_REALIZADA'] * df_model_data['PRECO_UNIT']
 df_model_data['PRECO_PREDITO'] = df_model_data['QUANT_PREDITA'] * df_model_data['PRECO_UNIT']
@@ -1530,21 +1621,19 @@ print("\n" + "="*80)
 print("💾 SALVANDO RESULTADOS")
 print("="*80)
 
-# Predições de Treino/Teste
 Helpers.save_output_dataset(
     context=context,
     output_name='df_historico_pedidos_realizados',
     data_frame=df_model_data
 )
-print("    ✅ predicoes_compras_abc_xgboost")
+print("    ✅ df_historico_pedidos_realizados")
 
-# Forecast 12 meses
 Helpers.save_output_dataset(
     context=context,
     output_name='df_historico_pedidos_previstos',
     data_frame=df_forecast_compras
 )
-print("    ✅ df_forecast_compras_12m")
+print("    ✅ df_historico_pedidos_previstos")
 
 print("\n" + "="*80)
 print("✅ PROCESSAMENTO COMPLETO!")

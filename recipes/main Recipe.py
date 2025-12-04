@@ -30,18 +30,15 @@ from dateutil.relativedelta import relativedelta
 from typing import List
 import logging
 
-# Configurar logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 str_token = Helpers.get_user_token(context)
 Requests.setToken(str_token)
 
-# Constantes
 DAYS_BEFORE_SHIPMENT = 15
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Important functions
 def print_df_info(df_name, df):
     """Imprime informações básicas de um DataFrame"""
     print(f"\n{'='*70}")
@@ -132,8 +129,6 @@ def get_in_transit_orders(df_pedidos_pendentes: pd.DataFrame, df_produtos: pd.Da
             )
         )
         
-    # Manter DT. Prod. Prev. como datetime para uso interno
-    # Formatar apenas para exibição quando necessário
     df_pedidos_pendentes["Data SI"] = df_pedidos_pendentes["Data SI"].dt.strftime("%d-%b-%Y")
     df_pedidos_pendentes["DT. Entrega PO"] = df_pedidos_pendentes["DT. Entrega PO"].dt.strftime("%d-%b-%Y")
     df_pedidos_pendentes["Entrega Prevista"] = df_pedidos_pendentes["Entrega Prevista"].dt.strftime("%d-%b-%Y")
@@ -280,7 +275,6 @@ def get_sales_last_months(df_vendas_raw):
     return df_vendas_periodo
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Carregar DataFrames de histórico de pedidos
 df_historico_pedidos_realizados = Helpers.getEntityData(context, "df_historico_pedidos_realizados")
 print_df_info("df_historico_pedidos_realizados", df_historico_pedidos_realizados)
 df_historico_pedidos_realizados['MES'] = pd.to_datetime(df_historico_pedidos_realizados['MES'])
@@ -289,11 +283,9 @@ df_historico_pedidos_previstos = Helpers.getEntityData(context, "df_historico_pe
 print_df_info("df_historico_pedidos_previstos", df_historico_pedidos_previstos)
 df_historico_pedidos_previstos['MES'] = pd.to_datetime(df_historico_pedidos_previstos['MES'])
 
-# df_produtos
 df_produtos = Helpers.getEntityData(context, "produtos")
 print_df_info("df_produtos", df_produtos)
 
-# df_pedidos_pendentes
 df_pedidos_pendentes = Helpers.getEntityData(context, "pedidos_pendentes")
 print_df_info("df_pedidos_pendentes", df_pedidos_pendentes)
 
@@ -308,19 +300,15 @@ dtypes = {
 df_pedidos_pendentes = df_pedidos_pendentes.astype(dtypes)
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Inicializa a lista de auditoria
 lista_dfs_sem_match = []
 
-# df_inventory_histories
 df_inventory_histories = Helpers.getEntityData(context, "new_inventory_histories2")
 print_df_info("df_inventory_histories", df_inventory_histories)
 
-# Garantir tipos corretos
 df_inventory_histories['date'] = pd.to_datetime(df_inventory_histories['date'])
 df_inventory_histories['Componente'] = df_inventory_histories['Componente'].astype(str)
 df_inventory_histories['QTD_ESTOQUE'] = pd.to_numeric(df_inventory_histories['QTD_ESTOQUE'], errors='coerce')
 
-# --- FILTRO 1: Remover linhas com dados inválidos ---
 mask_inv_invalid = (
     df_inventory_histories['date'].isna() | 
     df_inventory_histories['Componente'].isna() | 
@@ -337,7 +325,6 @@ if mask_inv_invalid.sum() > 0:
 df_inventory_histories = df_inventory_histories[~mask_inv_invalid]
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Obter informações globais
 last_available_date = df_inventory_histories['date'].max()
 first_available_date = df_inventory_histories['date'].min()
 available_components = set(df_inventory_histories['Componente'].unique())
@@ -347,7 +334,6 @@ print(f"   - Registros: {len(df_inventory_histories):,}")
 print(f"   - Período: {first_available_date.date()} a {last_available_date.date()}")
 print(f"   - Componentes: {len(available_components)}")
 
-# df_faturamento_minimo
 df_faturamento_minimo = Helpers.getEntityData(context, "faturamento_minimo")
 print_df_info("df_faturamento_minimo", df_faturamento_minimo)
 
@@ -355,7 +341,6 @@ df_faturamento_minimo.columns = ['Fornecedor', 'Supp Code', 'Fatur.Min.']
 df_faturamento_minimo['Supp Code'] = df_faturamento_minimo['Supp Code'].astype('str')
 df_faturamento_minimo['Supp Code'] = df_faturamento_minimo['Supp Code'].str.replace(',', '')
 
-# df_monthly_portalvendas
 df_monthly_portalvendas = Helpers.getEntityData(context, "new_monthly_portalvendas")
 print_df_info("df_monthly_portalvendas", df_monthly_portalvendas)
 
@@ -363,22 +348,18 @@ dtypes = {"COD_MTE_COMP": "category", "MONTH": "datetime64[ns]", "QTDE_PEDIDA": 
 df_monthly_portalvendas = df_monthly_portalvendas.astype(dtypes)
 df_monthly_portalvendas.rename(columns={"MONTH": "DATA_PEDIDO"}, inplace=True)
 
-# df_main
 df_main = Helpers.getEntityData(context, "main")
 print_df_info("df_main", df_main)
 
 df_main['LT+RP'] = df_main['LT'] + df_main['RP']
 
-# df_vendas_raw
 df_vendas_raw = Helpers.getEntityData(context, "vendas")
 print_df_info("df_vendas_raw", df_vendas_raw)
 
-# df_new_register
 df_new_register = Helpers.getEntityData(context, "produtos")
 print_df_info("df_new_register", df_new_register)
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Adaptar para usar df_historico_pedidos_previstos
 first_base_month = df_historico_pedidos_previstos["MES"].min()
 last_base_month = df_historico_pedidos_previstos["MES"].max()
            
@@ -403,10 +384,33 @@ print(f"📅 Data de uso: {usage_date.date()}")
 print(f"📅 Dias desde a base: {days_since_base}")
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# 🔧 Limpeza e preparação do df_main
+print("\n🔄 Atualizando Stock e Inspection do df_main...")
+
+df_inventory_base = df_inventory_histories[df_inventory_histories['date'] == base_date].copy()
+
+if df_inventory_base.empty:
+    print(f"   ⚠️ Nenhum dado encontrado para {base_date.date()}, usando última data disponível")
+    df_inventory_base = df_inventory_histories[
+        df_inventory_histories['date'] == df_inventory_histories['date'].max()
+    ].copy()
+    base_date = df_inventory_histories['date'].max()
+
+print(f"   Registros de estoque na data base: {len(df_inventory_base)}")
+print(f"   Componentes únicos no histórico: {df_inventory_base['Componente'].nunique()}")
+
+df_stock_update = df_inventory_base[['Componente', 'QTD_ESTOQUE']].copy()
+df_stock_update.rename(
+    columns={'Componente': 'Component', 'QTD_ESTOQUE': 'Stock_new'}, 
+    inplace=True
+)
+
+df_stock_update = df_stock_update.groupby('Component')['Stock_new'].sum().reset_index()
+
+print(f"   Componentes prontos para merge: {len(df_stock_update)}")
+
+# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 print("🔧 Preparando df_main...")
 
-# 1. RESOLVER DUPLICAÇÃO DE COLUNAS Component/Cod_X
 if 'Component' in df_main.columns and 'Cod_X' in df_main.columns:
     print("   ⚠️ DETECTADA DUPLICAÇÃO: 'Component' e 'Cod_X' existem simultaneamente")
     if df_main['Component'].equals(df_main['Cod_X']):
@@ -423,14 +427,11 @@ elif 'Component' in df_main.columns:
 else:
     raise ValueError("❌ Nem 'Component' nem 'Cod_X' encontradas!")
 
-# 2. Garantir que Component é string
 df_main['Component'] = df_main['Component'].astype(str)
 
-# 3. FILTRAGEM COM AUDITORIA
 print("   Filtrando dados...")
 initial_rows = len(df_main)
 
-# --- FILTRO 2: Fornecedor Nulo ---
 mask_supp_na = df_main["Supp_Cod"].isna()
 
 if mask_supp_na.sum() > 0:
@@ -443,7 +444,6 @@ if mask_supp_na.sum() > 0:
 df_main = df_main[~mask_supp_na]
 print(f"   Após remover Supp_Cod nulos: {len(df_main)} linhas")
 
-# --- FILTRO 3: Formato de Componente Inválido ---
 mask_bad_fmt = df_main["Component"].str.count(r"\.") >= 2
 
 if mask_bad_fmt.sum() > 0:
@@ -456,26 +456,59 @@ if mask_bad_fmt.sum() > 0:
 df_main = df_main[~mask_bad_fmt]
 print(f"   Após filtrar pontos: {len(df_main)} linhas")
 
-# 4. Limpeza de valores
 df_main = df_main.replace("None", None)
 
-# Remover colunas Order_sug se existirem
 cols_to_remove = ['Order_sug', 'Order_sug_v2', 'Final_order']
 for col in cols_to_remove:
     if col in df_main.columns:
         df_main = df_main.drop(columns=[col])
         print(f"   ✅ Coluna '{col}' removida")
 
-# Garantir colunas numéricas essenciais
 df_main["Demand_(LT+RP)"] = df_main["Demand_(LT+RP)"].fillna(0).astype(int)
 df_main["LT"] = df_main["LT"].fillna(0).astype(int)
 df_main["RP"] = df_main["RP"].fillna(0).astype(int)
 
+# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
+print("\n🔄 Aplicando merge do inventory_histories com df_main...")
+
+df_main = pd.merge(
+    df_main,
+    df_stock_update,
+    on='Component',
+    how='left'
+)
+
+components_updated = df_main['Stock_new'].notna().sum()
+components_not_found = df_main['Stock_new'].isna().sum()
+
+print(f"   ✅ Componentes com estoque atualizado: {components_updated}")
+print(f"   ⚠️ Componentes sem dados de estoque: {components_not_found}")
+
+if 'Stock' in df_main.columns:
+    df_main['Stock_old'] = df_main['Stock']
+    
+    df_main['Stock'] = df_main['Stock_new'].fillna(df_main['Stock'])
+    
+    stocks_changed = (df_main['Stock_old'] != df_main['Stock']).sum()
+    print(f"   🔄 Estoques efetivamente alterados: {stocks_changed}")
+    
+    df_main = df_main.drop(columns=['Stock_new', 'Stock_old'])
+else:
+    df_main['Stock'] = df_main['Stock_new'].fillna(0)
+    df_main = df_main.drop(columns=['Stock_new'])
+    print("   ✅ Coluna 'Stock' criada")
+
+if all(col in df_main.columns for col in ['Stock', 'Transit', 'Inspection']):
+    df_main['Total Stock'] = (
+        df_main['Stock'].fillna(0) + 
+        df_main['Transit'].fillna(0) + 
+        df_main['Inspection'].fillna(0)
+    )
+    print("   ✅ 'Total Stock' recalculado")
+
 print(f"✅ df_main preparado: {len(df_main)} linhas finais")
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# CONSOLIDAÇÃO DO DATAFRAME DE AUDITORIA (df_sem_match)
-
 if len(lista_dfs_sem_match) > 0:
     df_sem_match = pd.concat(lista_dfs_sem_match, ignore_index=True)
 else:
@@ -485,7 +518,6 @@ df_sem_match = df_sem_match[['Cod_component', 'origem', 'motivo']].drop_duplicat
 Helpers.save_output_dataset(context=context, output_name='df_sem_match_atual_7', data_frame=df_sem_match)
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Processar base_month e base_date se existirem
 if 'base_month' in df_main.columns and 'base_date' in df_main.columns:
     base_month_main = df_main["base_month"].max()
     base_date_main = df_main["base_date"].max()
@@ -494,26 +526,21 @@ if 'base_month' in df_main.columns and 'base_date' in df_main.columns:
     print(f"✅ Filtrado por base_month: {base_month_main}")
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Mover coluna Component para o início
 if 'Component' in df_main.columns:
     component_col = df_main.pop('Component')
     df_main.insert(0, 'Component', component_col)
     print("✅ Coluna 'Component' movida para o início")
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Renomear colunas e preparar estrutura
 df_main.columns = df_main.columns.str.replace("_", " ")
 
-# Remover colunas antigas de Order sug se ainda existirem
 cols_to_drop = ['Total Stock Sales 12M', 'Order sug Sales 12M', 'Lost 12M', 'Order sug', 'Order sug v2']
 existing_cols_to_drop = [col for col in cols_to_drop if col in df_main.columns]
 if existing_cols_to_drop:
     df_main = df_main.drop(existing_cols_to_drop, axis=1)
     print(f"✅ Colunas removidas: {existing_cols_to_drop}")
 
-# Adicionar coluna Obs se não existir
 if 'Obs' not in df_main.columns:
-    # Inserir após a primeira coluna que contém "Stock" ou no final
     stock_cols = [col for col in df_main.columns if 'Stock' in col]
     if stock_cols:
         ref_column_index = df_main.columns.get_loc(stock_cols[0])
@@ -521,7 +548,6 @@ if 'Obs' not in df_main.columns:
     else:
         df_main['Obs'] = ''
 
-# Garantir tipos corretos
 if 'Cost' in df_main.columns:
     df_main['Cost'] = df_main['Cost'].astype('float64').round(2)
 if 'Total Cost' in df_main.columns:
@@ -532,7 +558,6 @@ if '% Export 12M' in df_main.columns:
     df_main['% Export 12M'] = df_main['% Export 12M'].round(5)
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Identificar componentes com histórico
 components_in_main = set(df_main['Component'].unique())
 components_with_history = components_in_main.intersection(available_components)
 components_without_history = components_in_main - available_components
@@ -543,10 +568,6 @@ print(f"   ⚠️ Sem histórico: {len(components_without_history)}")
 print(f"   Taxa de cobertura: {len(components_with_history)/len(components_in_main)*100:.1f}%")
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# ============================================================================
-# OBTER SUGESTÕES DO MODELO A PARTIR DO HISTÓRICO DE PEDIDOS
-# ============================================================================
-
 min_month = df_historico_pedidos_previstos['MES'].min()
 df_historico_pedidos_previstos = df_historico_pedidos_previstos[df_historico_pedidos_previstos['MES']==min_month]
 df_historico_pedidos_previstos = df_historico_pedidos_previstos[['COMPONENT', 'COD_FORNE', 'QUANT_PREDITA']].rename(
@@ -565,7 +586,6 @@ df_main = pd.merge(
 )
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Merging transit for the next months into df_main
 df_pending_orders = get_in_transit_orders(df_pedidos_pendentes, df_produtos)
 df_pending_orders['DT. Entrega PO'] = pd.to_datetime(df_pending_orders['DT. Entrega PO'], format="%d-%b-%Y", errors='coerce')
 df_pending_orders['year_month'] = df_pending_orders['DT. Entrega PO'].dt.strftime('%Y-%m')
@@ -585,7 +605,6 @@ cols_to_replace = [col for col in ["Supplier", "ABC"] if col in df_main.columns]
 df_main[cols_to_replace] = df_main[cols_to_replace].fillna("-")
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Date of registration and first sale
 df_new_register = df_new_register[['B1_COD', 'DTA_CADASTRO']]
 
 df_first_sale = df_vendas_raw[['B1_COD_PP', 'DATA']]
@@ -612,13 +631,14 @@ df_new_products['NewProduct'] = df_new_products.apply(calculate_new_product, axi
 df_main = pd.merge(df_main, df_new_products, left_on='Component', right_on='B1_COD', how='left')
 df_main = df_main.drop(['B1_COD', 'B1_COD_PP', 'DTA_CADASTRO', 'first_sale_date'], axis=1)
 
-# Get exceptions
 df_exceptions = Helpers.getEntityData(context, "excecoes_produtos_sem_fornecedores") 
 df_main['IsException'] = df_main['Component'].apply(lambda x: x in df_exceptions['Cod_Produto'].values)
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Classificação ABC
+df_main = df_main.loc[:, ~df_main.columns.duplicated()]
+
 df_main = df_main.sort_values(by='Sales 12M', ascending=False)
+df_main = df_main.reset_index(drop=True)
 
 df_main['Participacao'] = (df_main['Sales 12M']/df_main['Sales 12M'].fillna(0).sum()*100).round(2)
 df_main['Participacao Acumulada'] = df_main['Participacao'].cumsum().round(2)
@@ -649,35 +669,25 @@ df_main['Alcance - Estoque Total'] = (
 ).round(0).fillna(0).astype(int)
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# ============================================================================
-# LÓGICA DE SUGESTÃO DE COMPRA
-# ============================================================================
 print("\n🎯 Calculando sugestões (Modelo e Baseline separados)...")
 
-# --- 1. Definir cobertura mínima por classe ---
 df_main['cobertura_minima_em_meses'] = np.where(
     df_main['New ABC'].isin(['A', 'B']), 7, 5
 )
 
-# --- 2. Calcular BASELINE TRADICIONAL ---
-print("\n📊 Calculando Final_order baseline...")
 venda_mensal_safe = df_main["Venda mensal"].replace(0, np.nan).fillna(1)
 
 baseline_raw = (
     df_main['cobertura_minima_em_meses'] * venda_mensal_safe
 ) - df_main["Total Stock"].fillna(0)
 
-# Arredondar baseline para múltiplo de 10
 df_main['Final_order baseline'] = np.ceil(baseline_raw / 10) * 10
 df_main['Final_order baseline'] = df_main['Final_order baseline'].fillna(0).astype(int)
 
-# Garantir que baseline não seja negativo
 df_main['Final_order baseline'] = df_main['Final_order baseline'].clip(lower=0)
 
-# --- 3. Calcular FINAL_ORDER DO MODELO ---
 df_main['Final_order'] = df_main['Final_order'].fillna(0).astype(int)
 
-# --- 4. Aplicar FLAG ao MODELO ---
 alcance_float = (df_main["Total Stock"].fillna(0)) / venda_mensal_safe
 df_main['Flag'] = np.where(
     (alcance_float.notna()) & (alcance_float > df_main['cobertura_minima_em_meses']),
@@ -685,24 +695,20 @@ df_main['Flag'] = np.where(
     "Comprar"
 )
 
-# Zerar APENAS o Final_order (modelo) se Flag = "Não Comprar"
 df_main['Final_order'] = np.where(
     df_main['Flag'] == "Não Comprar",
     0,
     df_main['Final_order']
 ).astype(int)
 
-# --- 5. Rastreabilidade ---
 df_main['Origem Sugestão'] = np.where(
     df_main['Final_order'] == 0,
     'Flag: Não Comprar',
     'Modelo ML (100%)'
 )
 
-# --- 6. Limpar coluna temporária ---
 df_main = df_main.drop(columns=['cobertura_minima_em_meses'])
 
-# --- 7. Calcular cobertura ---
 df_main['Cobertura'] = (df_main['Total Stock'] / venda_mensal_safe).round(2)
 df_main['Cobertura'] = df_main['Cobertura'].fillna(0)
 
@@ -719,9 +725,6 @@ df_main['Alcance - Estoque total + Novo pedido'] = (
 cols_to_fix = ['Final_order', 'Final_order baseline']
 
 for col in cols_to_fix:
-    # 1. Garante que NaNs sejam 0 para evitar erros
-    # 2. Aplica a fórmula: (Valor / 5) -> Arredonda -> * 5
-    # 3. Converte para inteiro
     df_main[col] = df_main[col].fillna(0)
     df_main[col] = (df_main[col] / 5).round() * 5
     df_main[col] = df_main[col].astype(int)
@@ -734,7 +737,6 @@ print("\n--- Distribuição das Origens das Sugestões ---")
 print(df_main['Origem Sugestão'].value_counts())
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Aplicar teto de segurança APENAS ao Final_order (modelo)
 print("\n🔒 Aplicando teto de segurança ao Final_order (modelo)...")
 
 df_main['Sales 12M'] = pd.to_numeric(df_main['Sales 12M'], errors='coerce').fillna(0)
@@ -742,26 +744,26 @@ teto_anual_arredondado = np.floor(df_main['Sales 12M'] / 10) * 10
 
 df_main['Obs'] = df_main['Obs'].astype(str).fillna('')
 
-# Aplicar cap ao Final_order (modelo)
 cond_capped = (df_main['Final_order'] > teto_anual_arredondado)
 df_main.loc[cond_capped, 'Obs'] = (
     df_main.loc[cond_capped, 'Obs']
     .str.strip()
     .add(' [Cap Final]')
 )
-df_main['Final_order'] = np.minimum(df_main['Final_order'], teto_anual_arredondado).astype(int)
+# ✅ CORREÇÃO: Adicionar fillna(0) antes de astype(int)
+df_main['Final_order'] = np.minimum(df_main['Final_order'], teto_anual_arredondado).fillna(0).astype(int)
 
-# Aplicar cap ao baseline também (para comparação justa)
 cond_capped_bl = (df_main['Final_order baseline'] > teto_anual_arredondado)
 df_main.loc[cond_capped_bl, 'Obs'] = (
     df_main.loc[cond_capped_bl, 'Obs']
     .str.strip()
     .add(' [Cap BL]')
 )
+# ✅ CORREÇÃO: Adicionar fillna(0) antes de astype(int)
 df_main['Final_order baseline'] = np.minimum(
     df_main['Final_order baseline'], 
     teto_anual_arredondado
-).astype(int)
+).fillna(0).astype(int)
 
 df_main['Obs'] = df_main['Obs'].str.strip()
 df_main = df_main.drop(columns=['Obs'])
@@ -771,7 +773,6 @@ print(f"   - Final_order limitado: {cond_capped.sum()}")
 print(f"   - Baseline limitado: {cond_capped_bl.sum()}")
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Verificar sugestões muito altas ou muito baixas
 avg_demand = (df_main['Sales 12M'] + df_main['Unfulfilled 12M'])/12
 df_main['Check Suggestion'] = np.where(
     (avg_demand / 12 < 10) | 
@@ -782,23 +783,19 @@ df_main['Check Suggestion'] = np.where(
 )
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Garantir que não há valores negativos
 df_main['Final_order'] = df_main['Final_order'].apply(lambda x: max(0, x))
 df_main['Final_order baseline'] = df_main['Final_order baseline'].apply(lambda x: max(0, x))
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Verificar faturamento mínimo
 default_list = min_order_value_warning(df_main, df_faturamento_minimo)
 df_main['Min Order Value Warning'] = df_main['Supp Cod'].isin(default_list)
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Comparação Modelo vs Baseline
 print("\n📊 Análise: Modelo vs Baseline...")
 
 df_main['Diferença (Modelo - Baseline)'] = df_main['Final_order'] - df_main['Final_order baseline']
 df_main['Diferença Abs'] = df_main['Diferença (Modelo - Baseline)'].abs()
 
-# Categorizar concordância
 conditions = [
     df_main['Final_order'] == df_main['Final_order baseline'],
     df_main['Final_order'] > df_main['Final_order baseline'],
@@ -811,7 +808,6 @@ choices = [
 ]
 df_main['Comparação'] = np.select(conditions, choices, default='')
 
-# Alertas visuais de diferença
 alert_conditions = [
     df_main['Diferença Abs'] > 900,
     df_main['Diferença Abs'] > 400
@@ -831,19 +827,17 @@ print(f"   - Mediana: {df_main['Diferença (Modelo - Baseline)'].median():.2f}")
 print(f"   - Diferença absoluta média: {df_main['Diferença Abs'].mean():.2f}")
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Calcular alerta baseado na Model Suggestion vs demanda média
 df_main['Model vs Demand Ratio'] = (
     df_main['Final_order'] / df_main['Venda mensal']
 ).replace([np.inf, -np.inf], np.nan).round(2)
 
 conditions = [
-    df_main['Model vs Demand Ratio'] > 10,  # 🔴 Sugestão muito alta
-    df_main['Model vs Demand Ratio'] > 5   # 🟡 Sugestão alta
+    df_main['Model vs Demand Ratio'] > 10,
+    df_main['Model vs Demand Ratio'] > 5
 ]
 icons = ['🔴', '🟡']
 df_main['Alerta (Model vs Demand Ratio)'] = np.select(conditions, icons, default='🟢')
 df_main['Model vs Demand Ratio'] = df_main['Model vs Demand Ratio'].fillna(0)
-#df_main[['Component', 'Final_order baseline', 'Final_order', 'Alert Diferença']].sort_values(['Component', 'Final_order baseline'], ascending=[True, False])
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 df_vendas_periodo = get_sales_last_months(df_vendas_raw)
@@ -851,7 +845,6 @@ cols_sales = [col for col in df_vendas_periodo.columns if col.startswith('Sales-
 df_vendas_periodo[cols_sales] = df_vendas_periodo[cols_sales].fillna(0)
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Calcular estatísticas de vendas mensais (mantido igual)
 df_main = pd.merge(df_main, df_vendas_periodo, on='Component', how='left')
 sales_cols = df_main.filter(like="Sales-M")
 
@@ -922,7 +915,6 @@ df_main["Service Level"] = np.select(
 )
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Funções auxiliares para conversão de tipos
 def _safe_to_numeric(df, cols, as_int=False, round_ndec=None):
     """Converte colunas para numérico"""
     present = [c for c in cols if c in df.columns]
@@ -940,7 +932,6 @@ def _clip_negatives(df, cols):
         if c in df.columns:
             df.loc[df[c] < 0, c] = 0
 
-# Colunas de string
 string_cols = [
     "Component", "Cod X", "Description", "Group code", "Group name",
     "Supplier", "ABC", "Obs", "Comparação"
@@ -953,11 +944,10 @@ if present_str:
 if "Group code" in df_main.columns:
     df_main["Group code"] = df_main["Group code"].str.replace("'", "", regex=False)
 
-# Colunas inteiras (COM Final_order baseline)
 int_cols = [
     "Supp Cod", "Stock", "Transit", "Inspection", "Reserved", "Total Stock",
     "Sales 12M", "Unfulfilled 12M", "KanBan Min", "KanBan Max",
-    "Final_order", "Final_order baseline",  # ← AMBOS mantidos
+    "Final_order", "Final_order baseline",
     "Alert", "Safety stock", "RP", "LT", "LT+RP", "Inventory level",
     "Demand (LT+RP)", "Venda mensal", "Diferença (Modelo - Baseline)", "Diferença Abs"
 ]
@@ -966,17 +956,14 @@ _safe_to_numeric(df_main, int_cols, as_int=True)
 if "Supp Cod" in df_main.columns:
     df_main["Supp Cod"] = df_main["Supp Cod"].astype(str)
 
-# Colunas float
 float_cols = ["% Export 12M", "Cost", "Total Cost", "Model Suggestion", "Model vs Demand Ratio"]
 _safe_to_numeric(df_main, float_cols, as_int=False, round_ndec=2)
 
-# Colunas dinâmicas inteiras
 transit_cols = [c for c in df_main.columns if c.startswith("Transit ")]
 sales_m_cols = [c for c in df_main.columns if c.startswith("Sales-M")]
 dyn_int_cols = transit_cols + sales_m_cols
 _safe_to_numeric(df_main, dyn_int_cols, as_int=True)
 
-# Recalcular Total Cost (baseado no Final_order do modelo)
 if {"Cost", "Final_order"}.issubset(df_main.columns):
     cost_num = pd.to_numeric(df_main["Cost"], errors="coerce")
     fo_num = pd.to_numeric(df_main["Final_order"], errors="coerce")
@@ -985,7 +972,6 @@ else:
     if "Total Cost" not in df_main.columns:
         df_main["Total Cost"] = np.nan
 
-# Zerar negativos
 _clip_negatives(df_main, [
     "Stock", "Transit", "Inspection", "Reserved", "Total Stock", 
     "Total Cost", "Sales 12M", "Unfulfilled 12M"
@@ -998,22 +984,15 @@ df_main.insert(posicao_nova, 'Final_order baseline', coluna_para_mover)
 print("✅ Tipos de dados atualizados")
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# ============================================================================
-# CÁLCULO DE RUPTURA PROJETADA (SIMULAÇÃO DIA A DIA)
-# ============================================================================
 print("\n🔮 Iniciando simulação de estoque dia-a-dia...")
 transit_dict = dict(tuple(df_pending_orders[df_pending_orders['MTE'].isin(df_main['Component'])].groupby('MTE')))
 
-# Definir função wrapper para aplicar no DataFrame
 def simulate_stock_row(row):
     component = row['Component']
     
-    # Se não tiver LT ou RP, assume 0 para evitar erro de divisão
     lt = int(row['LT']) if pd.notna(row['LT']) else 0
     rp = int(row['RP']) if pd.notna(row['RP']) else 0
     
-    # Demanda total no período de cobertura (LT+RP)
-    # Se a coluna 'Demand (LT+RP)' não estiver confiável, calculamos na hora usando Venda Mensal
     if 'Venda mensal' in row and row['Venda mensal'] > 0:
         daily_demand = row['Venda mensal'] / 30
         demand_period_total = daily_demand * (lt + rp)
@@ -1021,21 +1000,16 @@ def simulate_stock_row(row):
         demand_period_total = 0
 
     if demand_period_total == 0:
-        return 0.0 # Sem demanda, sem perda
+        return 0.0
 
     current_stock = int(row['Total Stock']) if pd.notna(row['Total Stock']) else 0
     final_order = int(row['Final_order']) if pd.notna(row['Final_order']) else 0
     
-    # Busca trânsito específico deste componente
     df_transit_comp = transit_dict.get(component, pd.DataFrame(columns=["DT. Entrega PO", "Qtd"]))
     
-    # Data de início (Hoje ou a data base do relatório)
-    # Assumindo 'today' como data de uso, ou use a variável 'usage_date' definida anteriormente no script
     sim_date = datetime.datetime.now() 
     
     try:
-        # Chama a função original calculate_projected_level
-        # Nota: A função retorna (DataFrame Histórico, Total Lost)
         _, total_lost = calculate_projected_level(
             usage_date=sim_date,
             lt=lt,
@@ -1049,19 +1023,15 @@ def simulate_stock_row(row):
     except Exception:
         return 0.0
 
-# 3. Aplicar ao df_main
-# Aviso: Isso pode levar alguns segundos/minutos dependendo do tamanho do df_main
 print("Executando simulação para cada componente...")
 df_main['Venda Perdida Projetada (Unid)'] = df_main.apply(simulate_stock_row, axis=1)
 
-# Calcular valor financeiro da perda
 if 'Cost' in df_main.columns:
     df_main['Venda Perdida Projetada ($)'] = (df_main['Venda Perdida Projetada (Unid)'] * df_main['Cost']).round(2)
 
 print("✅ Simulação concluída.")
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# 4. Criar alerta de Ruptura
 df_main['Alerta Ruptura'] = np.where(
     df_main['Venda Perdida Projetada (Unid)'] > 0,
     '🔴 Risco de Ruptura',
@@ -1071,7 +1041,6 @@ df_main['Alerta Ruptura'] = np.where(
 print(df_main['Alerta Ruptura'].value_counts())
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Estatísticas finais
 print("\n📊 Estatísticas Finais:")
 print(f"\n🤖 MODELO (Final_order):")
 print(f"   - Total de componentes: {len(df_main)}")
@@ -1084,10 +1053,10 @@ print(f"   - Componentes com sugestão > 0: {(df_main['Final_order baseline'] > 
 print(f"   - Média: {df_main['Final_order baseline'].mean():.2f}")
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Salvar resultado final
 print("\n💾 Salvando df_main...")
 Helpers.save_output_dataset(context=context, output_name='df_main', data_frame=df_main)
 print("✅ df_main salvo com sucesso!")
 
 print(f"\n✨ Processamento concluído!")
 print(f"   📦 DataFrame final: {df_main.shape[0]} linhas × {df_main.shape[1]} colunas")
+
