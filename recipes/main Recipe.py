@@ -411,21 +411,21 @@ print(f"   Componentes prontos para merge: {len(df_stock_update)}")
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 print("🔧 Preparando df_main...")
 
-if 'Component' in df_main.columns and 'Cod_X' in df_main.columns:
-    print("   ⚠️ DETECTADA DUPLICAÇÃO: 'Component' e 'Cod_X' existem simultaneamente")
-    if df_main['Component'].equals(df_main['Cod_X']):
-        print("   ✅ Colunas são idênticas - removendo 'Cod_X'")
-        df_main = df_main.drop(columns=['Cod_X'])
+# Detecta qual variante do nome da coluna existe (Cod_X ou Cod X)
+cod_x_col = 'Cod_X' if 'Cod_X' in df_main.columns else ('Cod X' if 'Cod X' in df_main.columns else None)
+
+if 'Component' in df_main.columns and cod_x_col:
+    if df_main['Component'].equals(df_main[cod_x_col]):
+        print(f"   ✅ 'Component' e '{cod_x_col}' existem e são idênticas - mantendo ambas")
     else:
-        print("   ⚠️ Colunas são DIFERENTES! Mantendo 'Component' e removendo 'Cod_X'")
-        df_main = df_main.drop(columns=['Cod_X'])
-elif 'Cod_X' in df_main.columns and 'Component' not in df_main.columns:
-    print("   Renomeando 'Cod_X' → 'Component'")
-    df_main = df_main.rename(columns={'Cod_X': 'Component'})
+        print(f"   ✅ 'Component' e '{cod_x_col}' existem com valores diferentes - mantendo ambas")
+elif cod_x_col and 'Component' not in df_main.columns:
+    print(f"   Criando 'Component' a partir de '{cod_x_col}' (mantendo ambas)")
+    df_main['Component'] = df_main[cod_x_col]
 elif 'Component' in df_main.columns:
     print("   ✅ Apenas 'Component' existe (OK)")
 else:
-    raise ValueError("❌ Nem 'Component' nem 'Cod_X' encontradas!")
+    raise ValueError("❌ Nem 'Component' nem 'Cod_X'/'Cod X' encontradas!")
 
 df_main['Component'] = df_main['Component'].astype(str)
 
@@ -1059,4 +1059,3 @@ print("✅ df_main salvo com sucesso!")
 
 print(f"\n✨ Processamento concluído!")
 print(f"   📦 DataFrame final: {df_main.shape[0]} linhas × {df_main.shape[1]} colunas")
-

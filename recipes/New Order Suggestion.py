@@ -48,6 +48,7 @@ df_lista_excecoes_produtos_sem_fornecedores = Helpers.getEntityData(
 df_compiled_components = Helpers.getEntityData(
     context, "new_compiled_components2")
 df_historico_pedidos = Helpers.getEntityData(context, "historico_pedidos")
+df_pedidos_pendentes = Helpers.getEntityData(context, "pedidos_pendentes")
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # Inicializa lista de auditoria
@@ -199,6 +200,28 @@ def get_in_transit_orders(date, component, df_historico_pedidos):
     return df_hist
 
 
+def get_in_transit_orders_from_pendentes(date, component, df_pedidos_pendentes):
+    """
+    Busca pedidos em trânsito a partir de pedidos_pendentes.
+    Essa fonte é mais completa que historico_pedidos para pedidos não entregues.
+
+    Args:
+        date: Data de referência
+        component: Código do componente
+        df_pedidos_pendentes: DataFrame com pedidos pendentes
+
+    Returns:
+        DataFrame com pedidos em trânsito, com coluna QUANTIDADE para compatibilidade
+    """
+    df_pend = df_pedidos_pendentes[df_pedidos_pendentes["PRODUTO"] == component].copy()
+    if len(df_pend) > 0:
+        df_pend["DATA_SI"] = pd.to_datetime(df_pend["DATA_SI"])
+        df_pend = df_pend[df_pend["DATA_SI"] <= date]
+        # Renomear coluna para compatibilidade com código existente
+        df_pend = df_pend.rename(columns={"QTDE_NAO_ENTREGUE": "QUANTIDADE"})
+    return df_pend
+
+
 def get_demand_ltrp(base_date, df_forecast, lt_rp, component):
     df_forecast = df_forecast[
         (df_forecast["Component"] == component) &
@@ -319,7 +342,8 @@ def create_main_dataframe(
     df_compiled_components,
     usage_date: pd.Timestamp,
     days_since_base,
-    audit_list=None  # Novo parâmetro para auditoria
+    audit_list=None,  # Parâmetro para auditoria
+    df_pedidos_pendentes=None  # Novo: fonte para pedidos em trânsito
 ):
     df_vendas["DATA"] = pd.to_datetime(df_vendas["DATA"])
     df_vendas_12meses = df_vendas[df_vendas["DATA"]
@@ -398,7 +422,7 @@ def create_main_dataframe(
         df_estoque_comp = df_estoque_atual[df_estoque_atual["CODIGO_PI"] == component]
 
         if len(df_estoque_comp) > 0:
-            inspection = df_estoque_comp["QTD_TOT_EST"].values[0]
+            inspection = df_estoque_comp["QTD_TOT_EST_INSP"].values[0] # alterado para usar QTD_TOT_EST_INSP ao invés QTD_TOT_EST
             reserved = df_estoque_comp["QTD_RESE"].values[0]
             if inspection < 0:
                 print(f"⚠️ Inspection negativo para {component}: {inspection}")
@@ -406,9 +430,13 @@ def create_main_dataframe(
             inspection = 0
             reserved = 0
 
-        # Pedidos em trânsito
-        df_in_transit = get_in_transit_orders(
-            current_date, component, df_order_history)
+        # Pedidos em trânsito (usando pedidos_pendentes como fonte principal)
+        if df_pedidos_pendentes is not None:
+            df_in_transit = get_in_transit_orders_from_pendentes(
+                current_date, component, df_pedidos_pendentes)
+        else:
+            df_in_transit = get_in_transit_orders(
+                current_date, component, df_order_history)
         transit = df_in_transit["QUANTIDADE"].sum(
         ) if "QUANTIDADE" in df_in_transit.columns else 0
 
@@ -722,7 +750,8 @@ for base_month in base_months:
         df_compiled_components,
         usage_date,
         days_since_base,
-        audit_list=lista_dfs_sem_match  # Auditando
+        audit_list=lista_dfs_sem_match,  # Auditando
+        df_pedidos_pendentes=df_pedidos_pendentes  # Fonte correta para Transit
     )
 
     df_main["base_month"] = base_month
@@ -755,7 +784,8 @@ df_main_last, _ = create_main_dataframe(
     df_compiled_components,
     usage_date,
     0,
-    audit_list=lista_dfs_sem_match  # Auditando
+    audit_list=lista_dfs_sem_match,  # Auditando
+    df_pedidos_pendentes=df_pedidos_pendentes  # Fonte correta para Transit
 )
 
 df_main_last["base_month"] = last_base_month

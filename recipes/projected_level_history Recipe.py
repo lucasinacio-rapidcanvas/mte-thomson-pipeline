@@ -49,13 +49,18 @@ print_df_info("df_main", df_main)
 print("\n🔧 Preparando df_main...")
 
 # ✅ VERIFICAÇÃO INTELIGENTE: Verifica qual coluna usar
-if 'Component' in df_main.columns:
+# Detecta qual variante do nome da coluna existe (Cod_X ou Cod X)
+cod_x_col = 'Cod_X' if 'Cod_X' in df_main.columns else ('Cod X' if 'Cod X' in df_main.columns else None)
+
+if 'Component' in df_main.columns and cod_x_col:
+    print(f"   ✅ Colunas 'Component' e '{cod_x_col}' existem no dataset")
+elif 'Component' in df_main.columns:
     print("   ✅ Coluna 'Component' já existe no dataset")
-elif 'Cod_X' in df_main.columns:
-    df_main = df_main.rename(columns={'Cod_X': 'Component'})
-    print("   ✅ Coluna 'Cod_X' renomeada para 'Component'")
+elif cod_x_col:
+    df_main['Component'] = df_main[cod_x_col]
+    print(f"   ✅ Coluna 'Component' criada a partir de '{cod_x_col}' (mantendo ambas)")
 else:
-    print("   ❌ ERRO CRÍTICO: Nenhuma coluna 'Component' ou 'Cod_X' encontrada!")
+    print("   ❌ ERRO CRÍTICO: Nenhuma coluna 'Component' ou 'Cod_X'/'Cod X' encontrada!")
     print(f"   Colunas disponíveis: {df_main.columns.tolist()}")
     raise ValueError("Coluna 'Component' não encontrada em df_main")
 

@@ -45,7 +45,7 @@ df_sem_match7.columns = col_names
 
 df_sem_match = pd.concat([
     df_sem_match1,
-    df_sem_match2,
+    # df_sem_match2,
     df_sem_match3,
     df_sem_match4,
     df_sem_match5,
@@ -63,7 +63,8 @@ remover_motivos = [
     'Curva D (Baixa relevancia/Sem venda)',
     'Custo do produto igual a 0.0',
     'Previsao de venda zerada ou negativa (QTDE_PEDIDA <= 0)',
-    'Component com dois . em seu nome'
+    'Component com dois . em seu nome',
+    'Produto com custo 0'
 ]
 df_sem_match = df_sem_match[~df_sem_match['motivo'].isin(remover_motivos)]
 df_sem_match = df_sem_match[df_sem_match['component'].str.startswith(
