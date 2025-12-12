@@ -300,8 +300,6 @@ dtypes = {
 df_pedidos_pendentes = df_pedidos_pendentes.astype(dtypes)
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-lista_dfs_sem_match = []
-
 df_inventory_histories = Helpers.getEntityData(context, "new_inventory_histories2")
 print_df_info("df_inventory_histories", df_inventory_histories)
 
@@ -310,18 +308,10 @@ df_inventory_histories['Componente'] = df_inventory_histories['Componente'].asty
 df_inventory_histories['QTD_ESTOQUE'] = pd.to_numeric(df_inventory_histories['QTD_ESTOQUE'], errors='coerce')
 
 mask_inv_invalid = (
-    df_inventory_histories['date'].isna() | 
-    df_inventory_histories['Componente'].isna() | 
+    df_inventory_histories['date'].isna() |
+    df_inventory_histories['Componente'].isna() |
     (df_inventory_histories['Componente'] == 'nan')
 )
-
-if mask_inv_invalid.sum() > 0:
-    df_removed_inv = df_inventory_histories[mask_inv_invalid].copy()
-    df_audit_inv = df_removed_inv[['Componente']].rename(columns={'Componente': 'Cod_component'})
-    df_audit_inv['origem'] = 'df_inventory_histories'
-    df_audit_inv['motivo'] = 'Data ou Componente nulo/invalido'
-    lista_dfs_sem_match.append(df_audit_inv)
-
 df_inventory_histories = df_inventory_histories[~mask_inv_invalid]
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
@@ -433,26 +423,10 @@ print("   Filtrando dados...")
 initial_rows = len(df_main)
 
 mask_supp_na = df_main["Supp_Cod"].isna()
-
-if mask_supp_na.sum() > 0:
-    df_removed_supp = df_main[mask_supp_na].copy()
-    df_audit_supp = df_removed_supp[['Component']].rename(columns={'Component': 'Cod_component'})
-    df_audit_supp['origem'] = 'df_main_preprocessing'
-    df_audit_supp['motivo'] = 'Supp_Cod (Codigo Fornecedor) nulo'
-    lista_dfs_sem_match.append(df_audit_supp)
-
 df_main = df_main[~mask_supp_na]
 print(f"   Após remover Supp_Cod nulos: {len(df_main)} linhas")
 
 mask_bad_fmt = df_main["Component"].str.count(r"\.") >= 2
-
-if mask_bad_fmt.sum() > 0:
-    df_removed_fmt = df_main[mask_bad_fmt].copy()
-    df_audit_fmt = df_removed_fmt[['Component']].rename(columns={'Component': 'Cod_component'})
-    df_audit_fmt['origem'] = 'df_main_preprocessing'
-    df_audit_fmt['motivo'] = 'Formato invalido (contem 2 ou mais pontos)'
-    lista_dfs_sem_match.append(df_audit_fmt)
-
 df_main = df_main[~mask_bad_fmt]
 print(f"   Após filtrar pontos: {len(df_main)} linhas")
 
@@ -507,15 +481,6 @@ if all(col in df_main.columns for col in ['Stock', 'Transit', 'Inspection']):
     print("   ✅ 'Total Stock' recalculado")
 
 print(f"✅ df_main preparado: {len(df_main)} linhas finais")
-
-# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-if len(lista_dfs_sem_match) > 0:
-    df_sem_match = pd.concat(lista_dfs_sem_match, ignore_index=True)
-else:
-    df_sem_match = pd.DataFrame(columns=['Cod_component', 'origem', 'motivo'])
-
-df_sem_match = df_sem_match[['Cod_component', 'origem', 'motivo']].drop_duplicates()
-Helpers.save_output_dataset(context=context, output_name='df_sem_match_atual_7', data_frame=df_sem_match)
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 if 'base_month' in df_main.columns and 'base_date' in df_main.columns:

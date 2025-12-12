@@ -51,7 +51,7 @@ df_historico_pedidos = Helpers.getEntityData(context, "historico_pedidos")
 df_pedidos_pendentes = Helpers.getEntityData(context, "pedidos_pendentes")
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Inicializa lista de auditoria
+# Inicializa lista de auditoria (único df_sem_match do pipeline)
 lista_dfs_sem_match = []
 
 df_produto_fornecedor_ativo = Helpers.getEntityData(
@@ -62,17 +62,8 @@ df_produto_fornecedor = Helpers.getEntityData(context, "produto_fornecedor")
 print(f"df_produto_fornecedor: {df_produto_fornecedor.shape[0]} linhas")
 
 if df_produto_fornecedor.shape[0] > 0:
-    # 1. FILTRO CUSTO ZERO
+    # 1. FILTRO CUSTO ZERO (aplicar filtro sem auditoria - já tratado no Sanitizer)
     mask_custo_zero = df_produto_fornecedor['CUSTO_PRODUTO'] == 0.0
-
-    if mask_custo_zero.sum() > 0:
-        removed_custo = df_produto_fornecedor[mask_custo_zero].copy()
-        audit_custo = removed_custo[['PRODUTO']].rename(
-            columns={'PRODUTO': 'Cod_component'})
-        audit_custo['origem'] = 'df_produto_fornecedor'
-        audit_custo['motivo'] = 'Custo do produto igual a 0.0'
-        lista_dfs_sem_match.append(audit_custo)
-
     df_produto_fornecedor = df_produto_fornecedor[~mask_custo_zero]
 
     # 2. FILTRO MERGE (PRODUTO ATIVO SEM DADOS DE FORNECEDOR)
@@ -85,14 +76,23 @@ if df_produto_fornecedor.shape[0] > 0:
         indicator=True
     )
 
+    # AUDITORIA: Fornecedores ativos sem custo cadastrado
     mask_no_match = merge_check['_merge'] == 'left_only'
     if mask_no_match.sum() > 0:
         removed_merge = merge_check[mask_no_match].copy()
         audit_merge = removed_merge[['Cod_Produto']].rename(
             columns={'Cod_Produto': 'Cod_component'})
-        audit_merge['origem'] = 'df_produto_fornecedor_ativo'
-        audit_merge['motivo'] = 'Sem correspondencia em produto_fornecedor_ativo'
+        audit_merge['origem'] = 'Produtos ativos.csv e produto_fornecedor.csv'
+        audit_merge['motivo'] = 'O fornecedor do componente não está dando match entre as tabelas'
         lista_dfs_sem_match.append(audit_merge)
+
+        # CORREÇÃO: Remover componentes sem match de df_produto_fornecedor_ativo
+        # Isso impede que entrem no df_lt_rp e recebam sugestão de compra
+        produtos_sem_match = set(removed_merge['Cod_Produto'].values)
+        df_produto_fornecedor_ativo = df_produto_fornecedor_ativo[
+            ~df_produto_fornecedor_ativo['Cod_Produto'].isin(produtos_sem_match)
+        ]
+        print(f"⚠️ {len(produtos_sem_match)} componentes removidos de produto_fornecedor_ativo por falta de match")
 
     # Aplica o merge real (Inner)
     df_produto_fornecedor = (
@@ -213,7 +213,8 @@ def get_in_transit_orders_from_pendentes(date, component, df_pedidos_pendentes):
     Returns:
         DataFrame com pedidos em trânsito, com coluna QUANTIDADE para compatibilidade
     """
-    df_pend = df_pedidos_pendentes[df_pedidos_pendentes["PRODUTO"] == component].copy()
+    df_pend = df_pedidos_pendentes[df_pedidos_pendentes["PRODUTO"] == component].copy(
+    )
     if len(df_pend) > 0:
         df_pend["DATA_SI"] = pd.to_datetime(df_pend["DATA_SI"])
         df_pend = df_pend[df_pend["DATA_SI"] <= date]
@@ -342,7 +343,6 @@ def create_main_dataframe(
     df_compiled_components,
     usage_date: pd.Timestamp,
     days_since_base,
-    audit_list=None,  # Parâmetro para auditoria
     df_pedidos_pendentes=None  # Novo: fonte para pedidos em trânsito
 ):
     df_vendas["DATA"] = pd.to_datetime(df_vendas["DATA"])
@@ -354,15 +354,6 @@ def create_main_dataframe(
     # 3. FILTRO: COMPONENTES SEM ESTOQUE ATUAL
     mask_in_stock = df_compiled_components["Cod_Produto"].isin(
         df_estoque_atual["CODIGO_PI"])
-
-    if audit_list is not None and (~mask_in_stock).sum() > 0:
-        removed_stock = df_compiled_components[~mask_in_stock].copy()
-        audit_stock = removed_stock[['Cod_Produto']].rename(
-            columns={'Cod_Produto': 'Cod_component'})
-        audit_stock['origem'] = 'create_main_dataframe'
-        audit_stock['motivo'] = 'Produto nao encontrado em estoque_atual'
-        audit_list.append(audit_stock)
-
     df_compiled_components = df_compiled_components[mask_in_stock]
 
     current_date = base_date + pd.DateOffset(days_since_base, "D")
@@ -422,7 +413,8 @@ def create_main_dataframe(
         df_estoque_comp = df_estoque_atual[df_estoque_atual["CODIGO_PI"] == component]
 
         if len(df_estoque_comp) > 0:
-            inspection = df_estoque_comp["QTD_TOT_EST_INSP"].values[0] # alterado para usar QTD_TOT_EST_INSP ao invés QTD_TOT_EST
+            # alterado para usar QTD_TOT_EST_INSP ao invés QTD_TOT_EST
+            inspection = df_estoque_comp["QTD_TOT_EST_INSP"].values[0]
             reserved = df_estoque_comp["QTD_RESE"].values[0]
             if inspection < 0:
                 print(f"⚠️ Inspection negativo para {component}: {inspection}")
@@ -543,22 +535,9 @@ def create_main_dataframe(
                 currency = None
                 multiplier = None
         else:
-            active_supplier_code = None
-            active_supplier_name = None
-            active_cod_x = None
-            lt = 100
-            rp = 35
-            ltrp = 135
-            safety_stock = None
-
-            has_prediction = row.get("In_Multihorizon_Predictions", False)
-            demand_ltrp = int(get_demand_ltrp(
-                base_month, df_forecasts, ltrp, component)) if has_prediction else 0
-
-            order_sug = None
-            cost = None
-            currency = None
-            multiplier = None
+            # Componente não está em df_lt_rp - não deveria chegar aqui
+            # pois df_compiled_components já foi filtrado, mas por segurança:
+            continue
 
         data_row["Supp Cod"] = active_supplier_code
         data_row["Supplier"] = active_supplier_name
@@ -585,13 +564,6 @@ def create_main_dataframe(
 
         new_row = pd.DataFrame(data=data_row, index=[component])
         df_main = pd.concat([df_main, new_row])
-
-    # Auditoria do Filtro 4
-    if audit_list is not None and len(missing_history_list) > 0:
-        audit_hist = pd.DataFrame({'Cod_component': missing_history_list})
-        audit_hist['origem'] = 'create_main_dataframe'
-        audit_hist['motivo'] = 'Sem historico em df_inventory_histories (colunas do pivot)'
-        audit_list.append(audit_hist)
 
     dict_produtos_cols = {
         "B1_COD": "B1_COD",
@@ -722,6 +694,18 @@ df_lt_rp = create_df_lt_rp(
 base_months = list(df_multi_horizon_pred_component["base_date"].unique())
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
+# CORREÇÃO: Filtrar df_compiled_components para manter APENAS componentes
+# que estão em df_lt_rp (têm fornecedor ativo E custo cadastrado)
+# Isso remove tanto os auditados (sem custo) quanto os que nunca tiveram fornecedor
+componentes_validos = set(df_lt_rp.index)
+antes = len(df_compiled_components)
+df_compiled_components = df_compiled_components[
+    df_compiled_components['Cod_Produto'].isin(componentes_validos)
+]
+depois = len(df_compiled_components)
+print(f"📋 df_compiled_components filtrado por df_lt_rp: {antes} → {depois} ({antes - depois} removidos)")
+
+# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 df_main_all_bases = pd.DataFrame()
 usage_date = latest_date
 
@@ -731,7 +715,6 @@ for base_month in base_months:
 
     print(f"\nProcessando base_month: {pd.Timestamp(base_month).date()}")
 
-    # Passando lista_dfs_sem_match para auditoria
     df_main, components_without_inventory_history = create_main_dataframe(
         df_daily_portalvendas_components,
         df_vendas,
@@ -750,7 +733,6 @@ for base_month in base_months:
         df_compiled_components,
         usage_date,
         days_since_base,
-        audit_list=lista_dfs_sem_match,  # Auditando
         df_pedidos_pendentes=df_pedidos_pendentes  # Fonte correta para Transit
     )
 
@@ -765,7 +747,6 @@ last_available_date = df_inventory_histories["date"].max()
 
 print(f"\nProcessando última data: {pd.Timestamp(last_available_date).date()}")
 
-# Passando lista_dfs_sem_match para auditoria
 df_main_last, _ = create_main_dataframe(
     df_daily_portalvendas_components,
     df_vendas,
@@ -784,7 +765,6 @@ df_main_last, _ = create_main_dataframe(
     df_compiled_components,
     usage_date,
     0,
-    audit_list=lista_dfs_sem_match,  # Auditando
     df_pedidos_pendentes=df_pedidos_pendentes  # Fonte correta para Transit
 )
 
@@ -807,7 +787,7 @@ else:
 df_sem_match = df_sem_match[['Cod_component',
                              'origem', 'motivo']].drop_duplicates()
 Helpers.save_output_dataset(
-    context=context, output_name='df_sem_match_atual_4', data_frame=df_sem_match)
+    context=context, output_name='df_sem_match', data_frame=df_sem_match)
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 print(f"\n{'='*60}")

@@ -580,22 +580,8 @@ COD_MTE_COMP = "COD_MTE_COMP"
 CODIGO_MTE_ORIG_EXP = "CODIGO_MTE_ORIG_EXP"
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Inicializa a lista de auditoria
-lista_dfs_sem_match = []
-
-# Preparação dos dados (mantida do original com auditoria)
-# 1. FILTRO RODAPÉ
-
-# Captura a linha que será removida
-row_tail = df_portalvendas.tail(1).copy()
-row_tail['motivo'] = 'Linha de rodape/invalida'
-
-# Normaliza nome da coluna para auditoria
-row_tail_audit = row_tail[[COD_MTE_COMP]].rename(columns={COD_MTE_COMP: 'Cod_component'})
-row_tail_audit['motivo'] = 'Linha de rodape/invalida'
-lista_dfs_sem_match.append(row_tail_audit)
-
-# Aplica remoção
+# Preparação dos dados
+# 1. FILTRO RODAPÉ - Remove linha inválida no final do arquivo
 df_portalvendas = df_portalvendas.drop(df_portalvendas.tail(1).index)
 
 # Sanitização de colunas
@@ -641,16 +627,8 @@ if filter_last_2years:
     last_date_first_day_of_month = pd.Timestamp(f"{last_date.year}-{last_date.month:02d}-01")
     start_date = last_date_first_day_of_month - pd.DateOffset(years=2)
 
-    # Auditoria
+    # Filtrar: remover histórico antigo (> 2 anos) e mês corrente incompleto
     mask_time_out = (df_portalvendas[DATA_PEDIDO] < start_date) | (df_portalvendas[DATA_PEDIDO] >= last_date_first_day_of_month)
-
-    if mask_time_out.sum() > 0:
-        df_removed_time = df_portalvendas[mask_time_out].copy()
-        df_audit_time = df_removed_time[[COD_MTE_COMP]].rename(columns={COD_MTE_COMP: 'Cod_component'})
-        df_audit_time['motivo'] = 'Fora da Janela Temporal (Historico antigo ou mes atual)'
-        lista_dfs_sem_match.append(df_audit_time)
-
-    # Aplica filtro
     df_portalvendas = df_portalvendas[~mask_time_out]
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
@@ -1584,37 +1562,9 @@ print(f"DataFrame processado: {df_processed.shape}")
 print(f"Período: {df_processed[_next_month].min()} até {df_processed[_next_month].max()}")
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Removendo itens sem venda
-df_itens_sem_venda = df_processed[df_processed['CURVA_D']==1]
-df_processed = df_processed[df_processed['CURVA_D']!=1]
+# Removendo itens sem venda (Curva D - componentes sem histórico de vendas)
+df_processed = df_processed[df_processed['CURVA_D'] != 1]
 df_processed = df_processed.drop(columns=['CURVA_D'])
-
-# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-df_itens_sem_venda['origem'] = 'portal_vendas'
-df_itens_sem_venda['motivo'] = 'Componente sem vendas'
-df_itens_sem_venda = (
-    df_itens_sem_venda
-        .drop_duplicates(subset=['COD_MTE_COMP'])
-        .rename(columns={'COD_MTE_COMP': 'Cod_component'})
-)
-df_itens_sem_venda = df_itens_sem_venda[['Cod_component', 'origem', 'motivo']]
-
-# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# CONSOLIDAÇÃO DO DATAFRAME DE AUDITORIA (df_sem_match)
-if len(lista_dfs_sem_match) > 0:
-    df_sem_match = pd.concat(lista_dfs_sem_match, ignore_index=True)
-else:
-    df_sem_match = pd.DataFrame(columns=['Cod_component', 'motivo'])
-
-# Adicionar coluna de origem fixa
-df_sem_match['origem'] = 'portal_vendas (script: New 01 Process)'
-
-if len(df_itens_sem_venda) > 0:
-    df_sem_match = pd.concat([df_sem_match, df_itens_sem_venda], ignore_index=True)
-
-# Garantir a ordem das colunas solicitada
-df_sem_match = df_sem_match[['Cod_component', 'origem', 'motivo']]
-Helpers.save_output_dataset(context=context, output_name='df_sem_match_atual_3', data_frame=df_sem_match)
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # Split treino/teste

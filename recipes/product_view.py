@@ -71,9 +71,6 @@ def sanitize_date(date):
 print("Funcoes auxiliares definidas")
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Inicializa lista de auditoria
-lista_dfs_sem_match = []
-
 # ==============================================================================
 # ETAPA 1: PROCESSAR FORECAST (Previsões)
 # Objetivo: Limpar dados, manter APENAS o horizonte futuro e remover inválidos
@@ -99,17 +96,7 @@ df_forecast_clean = df_forecast_clean[
 print(f"  Registros apos manter apenas previsao futura: {len(df_forecast_clean)}")
 
 # 3. FILTRO DE VALIDADE: Remover registros com quantidade zero ou negativa
-# (Aplicado apenas ao futuro para não sujar o log com zeros históricos irrelevantes)
 mask_forecast_zero = df_forecast_clean['QTDE_PEDIDA'] <= 0
-
-if mask_forecast_zero.sum() > 0:
-    df_removed_fc = df_forecast_clean[mask_forecast_zero].copy()
-    df_audit_fc = df_removed_fc[['COD_MTE_COMP']].rename(columns={'COD_MTE_COMP': 'Cod_component'})
-    df_audit_fc['origem'] = 'df_sales_forecast'
-    df_audit_fc['motivo'] = 'Previsao de venda zerada ou negativa (QTDE_PEDIDA <= 0)'
-    lista_dfs_sem_match.append(df_audit_fc)
-
-# Aplica o filtro de quantidade
 df_forecast_clean = df_forecast_clean[~mask_forecast_zero]
 
 # 4. Ordenação final
@@ -151,34 +138,12 @@ df_bom_clean['G1_QUANT'] = df_bom_clean['G1_QUANT'].apply(sanitize_value)
 
 # FILTRO 2: Remover componentes com quantidade zero ou negativa
 mask_bom_zero = df_bom_clean['G1_QUANT'] <= 0
-
-if mask_bom_zero.sum() > 0:
-    df_removed_bom = df_bom_clean[mask_bom_zero].copy()
-    # Usando COD_PRODUTO como chave principal (produto pai)
-    df_audit_bom = df_removed_bom[['COD_PRODUTO']].rename(columns={'COD_PRODUTO': 'Cod_component'})
-    df_audit_bom['origem'] = 'df_estrutura_produto'
-    df_audit_bom['motivo'] = 'Quantidade na estrutura zerada ou negativa (G1_QUANT <= 0)'
-    lista_dfs_sem_match.append(df_audit_bom)
-
-# Aplica o filtro
 df_bom_clean = df_bom_clean[~mask_bom_zero]
 
 # Ordenar por produto e componente
 df_bom_clean = df_bom_clean.sort_values(['COD_PRODUTO', 'COD_COMPONENTE'])
 
 print(f"BOM processado: {df_bom_clean.shape}")
-
-# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# CONSOLIDAÇÃO DO DATAFRAME DE AUDITORIA (df_sem_match)
-
-if len(lista_dfs_sem_match) > 0:
-    df_sem_match = pd.concat(lista_dfs_sem_match, ignore_index=True)
-else:
-    df_sem_match = pd.DataFrame(columns=['Cod_component', 'origem', 'motivo'])
-
-# Garantir colunas e remover duplicatas
-df_sem_match = df_sem_match[['Cod_component', 'origem', 'motivo']].drop_duplicates()
-Helpers.save_output_dataset(context=context, output_name='df_sem_match_atual_6', data_frame=df_sem_match)
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # ETAPA 4: SALVAR OUTPUTS
@@ -189,30 +154,30 @@ df_forecast_clean = df_forecast_clean.reset_index(drop=True)
 
 Helpers.save_output_dataset(
     context=context,
-    output_name='df_sales_forecast_complete',
+    output_name='product_forecast',
     data_frame=df_forecast_clean
 )
-print(f"  Salvo: df_sales_forecast_complete ({df_forecast_clean.shape})")
+print(f"  Salvo: product_forecast ({df_forecast_clean.shape})")
 
 # 2. Output Histórico: Resetar index
 df_historical_clean = df_historical_clean.reset_index(drop=True)
 
 Helpers.save_output_dataset(
     context=context,
-    output_name='df_sales_historical',
+    output_name='product_history',
     data_frame=df_historical_clean
 )
-print(f"  Salvo: df_sales_historical ({df_historical_clean.shape})")
+print(f"  Salvo: product_history ({df_historical_clean.shape})")
 
 # 3. Output BOM: Resetar index
 df_bom_clean = df_bom_clean.reset_index(drop=True)
 
 Helpers.save_output_dataset(
     context=context,
-    output_name='df_product_structure',
+    output_name='product_structure',
     data_frame=df_bom_clean
 )
-print(f"  Salvo: df_product_structure ({df_bom_clean.shape})")
+print(f"  Salvo: product_structure ({df_bom_clean.shape})")
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # RESUMO FINAL
@@ -222,17 +187,17 @@ print("=" * 80)
 print("")
 print("RESUMO DOS DATASETS GERADOS:")
 print("")
-print(f"  1. df_sales_forecast_complete")
+print(f"  1. product_forecast")
 print(f"     - Registros: {df_forecast_clean.shape[0]:,}")
 print(f"     - Colunas: {df_forecast_clean.shape[1]}")
 print(f"     - Uso: Previsoes de vendas futuras (Horizonte > Base Date)")
 print("")
-print(f"  2. df_sales_historical")
+print(f"  2. product_history")
 print(f"     - Registros: {df_historical_clean.shape[0]:,}")
 print(f"     - Colunas: {df_historical_clean.shape[1]}")
 print(f"     - Uso: Historico real de vendas mensais")
 print("")
-print(f"  3. df_product_structure")
+print(f"  3. product_structure")
 print(f"     - Registros: {df_bom_clean.shape[0]:,}")
 print(f"     - Colunas: {df_bom_clean.shape[1]}")
 print(f"     - Uso: Estrutura BOM (componentes por produto)")
