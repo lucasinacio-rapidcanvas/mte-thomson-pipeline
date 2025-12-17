@@ -1,6 +1,14 @@
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # Required imports
 
+import math
+from sklearn.metrics import make_scorer
+from scipy.stats import norm
+from dateutil import parser
+import numpy as np
+import logging
+from datetime import datetime
+import pandas as pd
 from utils.notebookhelpers.helpers import Helpers
 from utils.dtos.templateOutputCollection import TemplateOutputCollection
 from utils.dtos.templateOutput import TemplateOutput
@@ -16,71 +24,75 @@ from utils.libutils.vectorStores.utils import VectorStoreUtils
 context = Helpers.getOrCreateContext(contextId='contextId', localVars=locals())
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-import pandas as pd
-from datetime import datetime
-import logging
-import numpy as np
-from dateutil import parser
-from scipy.stats import norm
-from sklearn.metrics import make_scorer
-import math
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # Carregar dados
-df_inventory_histories = Helpers.getEntityData(context, "new_inventory_histories2")
+df_inventory_histories = Helpers.getEntityData(
+    context, "new_inventory_histories2")
 df_estoque_atual = Helpers.getEntityData(context, "estoque_atual")
 df_produtos = Helpers.getEntityData(context, "produtos")
 df_estru_produtos = Helpers.getEntityData(context, "df_estrutura_produto")
-df_products_not_delivered_exportation = Helpers.getEntityData(context, "df_products_not_delivered_exportation")
-df_parametro_fornecedor = Helpers.getEntityData(context, "parametro_fornecedor")
-df_daily_portalvendas_components = Helpers.getEntityData(context, "new_daily_portalvendas_components")
-df_multi_horizon_pred_component = Helpers.getEntityData(context, "new_multihorizon_components")
+df_products_not_delivered_exportation = Helpers.getEntityData(
+    context, "df_products_not_delivered_exportation")
+df_parametro_fornecedor = Helpers.getEntityData(
+    context, "parametro_fornecedor")
+df_daily_portalvendas_components = Helpers.getEntityData(
+    context, "new_daily_portalvendas_components")
+df_multi_horizon_pred_component = Helpers.getEntityData(
+    context, "new_multihorizon_components")
 df_vendas = Helpers.getEntityData(context, "df_vendas")
-df_produtos_sob_demanda = Helpers.getEntityData(context, "produtos_sob_demanda")
-df_lista_excecoes_produtos_sem_fornecedores = Helpers.getEntityData(context, "excecoes_produtos_sem_fornecedores")
-df_compiled_components = Helpers.getEntityData(context, "new_compiled_components2")
+df_produtos_sob_demanda = Helpers.getEntityData(
+    context, "produtos_sob_demanda")
+df_lista_excecoes_produtos_sem_fornecedores = Helpers.getEntityData(
+    context, "excecoes_produtos_sem_fornecedores")
+df_compiled_components = Helpers.getEntityData(
+    context, "new_compiled_components2")
 df_historico_pedidos = Helpers.getEntityData(context, "historico_pedidos")
+df_pedidos_pendentes = Helpers.getEntityData(context, "pedidos_pendentes")
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Inicializa lista de auditoria
+# Inicializa lista de auditoria (único df_sem_match do pipeline)
 lista_dfs_sem_match = []
 
-df_produto_fornecedor_ativo = Helpers.getEntityData(context, "produto_fornecedor_ativo")
+df_produto_fornecedor_ativo = Helpers.getEntityData(
+    context, "produto_fornecedor_ativo")
 df_produto_fornecedor = Helpers.getEntityData(context, "produto_fornecedor")
 
 # Verificar e tratar df_produto_fornecedor vazio
 print(f"df_produto_fornecedor: {df_produto_fornecedor.shape[0]} linhas")
 
 if df_produto_fornecedor.shape[0] > 0:
-    # 1. FILTRO CUSTO ZERO
+    # 1. FILTRO CUSTO ZERO (aplicar filtro sem auditoria - já tratado no Sanitizer)
     mask_custo_zero = df_produto_fornecedor['CUSTO_PRODUTO'] == 0.0
-    
-    if mask_custo_zero.sum() > 0:
-        removed_custo = df_produto_fornecedor[mask_custo_zero].copy()
-        audit_custo = removed_custo[['PRODUTO']].rename(columns={'PRODUTO': 'Cod_component'})
-        audit_custo['origem'] = 'df_produto_fornecedor'
-        audit_custo['motivo'] = 'Custo do produto igual a 0.0'
-        lista_dfs_sem_match.append(audit_custo)
-
     df_produto_fornecedor = df_produto_fornecedor[~mask_custo_zero]
 
-    # 2. FILTRO MERGE (FORNECEDOR ATIVO)
-    # Simula o merge com indicator para ver quem cai fora
-    merge_check = df_produto_fornecedor.merge(
-        df_produto_fornecedor_ativo,
-        left_on=['PRODUTO', 'COD_FORNE'],
-        right_on=['Cod_Produto', 'Cod_Fornecedor'],
+    # 2. FILTRO MERGE (PRODUTO ATIVO SEM DADOS DE FORNECEDOR)
+    # Verifica quais produtos ATIVOS não têm dados em produto_fornecedor
+    merge_check = df_produto_fornecedor_ativo.merge(
+        df_produto_fornecedor,
+        left_on=['Cod_Produto', 'Cod_Fornecedor'],
+        right_on=['PRODUTO', 'COD_FORNE'],
         how='left',
         indicator=True
     )
-    
+
+    # AUDITORIA: Fornecedores ativos sem custo cadastrado
     mask_no_match = merge_check['_merge'] == 'left_only'
     if mask_no_match.sum() > 0:
         removed_merge = merge_check[mask_no_match].copy()
-        audit_merge = removed_merge[['PRODUTO']].rename(columns={'PRODUTO': 'Cod_component'})
-        audit_merge['origem'] = 'df_produto_fornecedor'
-        audit_merge['motivo'] = 'Sem correspondencia em produto_fornecedor_ativo'
+        audit_merge = removed_merge[['Cod_Produto']].rename(
+            columns={'Cod_Produto': 'Cod_component'})
+        audit_merge['origem'] = 'Produtos ativos.csv e produto_fornecedor.csv'
+        audit_merge['motivo'] = 'O fornecedor do componente não está dando match entre as tabelas'
         lista_dfs_sem_match.append(audit_merge)
+
+        # CORREÇÃO: Remover componentes sem match de df_produto_fornecedor_ativo
+        # Isso impede que entrem no df_lt_rp e recebam sugestão de compra
+        produtos_sem_match = set(removed_merge['Cod_Produto'].values)
+        df_produto_fornecedor_ativo = df_produto_fornecedor_ativo[
+            ~df_produto_fornecedor_ativo['Cod_Produto'].isin(produtos_sem_match)
+        ]
+        print(f"⚠️ {len(produtos_sem_match)} componentes removidos de produto_fornecedor_ativo por falta de match")
 
     # Aplica o merge real (Inner)
     df_produto_fornecedor = (
@@ -92,24 +104,32 @@ if df_produto_fornecedor.shape[0] > 0:
             how='inner'
         )[df_produto_fornecedor.columns]
     )
-    print(f"df_produto_fornecedor após filtros: {df_produto_fornecedor.shape[0]} linhas")
+    print(
+        f"df_produto_fornecedor após filtros: {df_produto_fornecedor.shape[0]} linhas")
 else:
     print("⚠️ df_produto_fornecedor vazio - custos não estarão disponíveis")
 
 # Criar coluna In_Multihorizon_Predictions se não existir
 if 'In_Multihorizon_Predictions' not in df_compiled_components.columns:
     print("Criando coluna In_Multihorizon_Predictions...")
-    components_with_predictions = set(df_multi_horizon_pred_component["Component"].unique())
-    df_compiled_components['In_Multihorizon_Predictions'] = df_compiled_components['Cod_Produto'].isin(components_with_predictions)
-    print(f"Componentes com previsões: {df_compiled_components['In_Multihorizon_Predictions'].sum()}/{len(df_compiled_components)}")
+    components_with_predictions = set(
+        df_multi_horizon_pred_component["Component"].unique())
+    df_compiled_components['In_Multihorizon_Predictions'] = df_compiled_components['Cod_Produto'].isin(
+        components_with_predictions)
+    print(
+        f"Componentes com previsões: {df_compiled_components['In_Multihorizon_Predictions'].sum()}/{len(df_compiled_components)}")
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
+
+
 def calculate_mean_lead_time(df_historico_pedidos, component_code):
-    df_hist = df_historico_pedidos[df_historico_pedidos["PRODUTO"] == component_code].copy()
+    df_hist = df_historico_pedidos[df_historico_pedidos["PRODUTO"]
+                                   == component_code].copy()
     if df_hist.shape[0] == 0:
         return np.nan, np.nan
-    
-    df_hist["Lead_Time"] = (df_hist["ENTREGA_EFET"] - df_hist["DATA_SI"]).dt.days
+
+    df_hist["Lead_Time"] = (df_hist["ENTREGA_EFET"] -
+                            df_hist["DATA_SI"]).dt.days
     avg_lt = df_hist["Lead_Time"].mean()
     sd_lt = df_hist["Lead_Time"].std()
     return avg_lt, sd_lt
@@ -129,24 +149,28 @@ def calculate_safety_stock(
     max_lookback_method="months"
 ):
     Z = norm.ppf(service_level)
-    df_filtered = df_consumption_true[df_consumption_true["Component"] == component_code].copy()
+    df_filtered = df_consumption_true[df_consumption_true["Component"]
+                                      == component_code].copy()
 
     if df_filtered.shape[0] == 0:
         return 0
-    
+
     df_filtered = df_filtered[df_filtered['DATA_PEDIDO'] < date]
 
     if max_lookback_method in ["orders", "both"]:
-        df_filtered = df_filtered.sort_values(by='DATA_PEDIDO', ascending=False)
+        df_filtered = df_filtered.sort_values(
+            by='DATA_PEDIDO', ascending=False)
         df_filtered = df_filtered.head(max_lookback_orders)
 
     if max_lookback_method in ["months", "both"]:
-        df_filtered = df_filtered[df_filtered['DATA_PEDIDO'] >= date - pd.DateOffset(months=max_lookback)]
-    
-    avg_lt, std_lt = calculate_mean_lead_time(df_historico_pedidos, component_code)
+        df_filtered = df_filtered[df_filtered['DATA_PEDIDO']
+                                  >= date - pd.DateOffset(months=max_lookback)]
+
+    avg_lt, std_lt = calculate_mean_lead_time(
+        df_historico_pedidos, component_code)
     avg_consumption = df_filtered["Consumption"].mean()
     std_consumption = df_filtered["Consumption"].std()
-    
+
     if method == 3:
         safety_stock = Z * std_consumption * np.sqrt(avg_lt)
     elif method == 4:
@@ -157,51 +181,82 @@ def calculate_safety_stock(
         else:
             safety_stock = Z * avg_consumption * std_lt
     elif method == 5:
-        safety_stock = Z * math.sqrt((avg_lt * (std_consumption) ** 2 + (avg_consumption * std_lt) ** 2))
+        safety_stock = Z * \
+            math.sqrt((avg_lt * (std_consumption) ** 2 +
+                      (avg_consumption * std_lt) ** 2))
     else:
         safety_stock = 0
-    
+
     safety_stock = safety_stock * safety_factor
     return safety_stock if not pd.isna(safety_stock) else 0
 
 
 def get_in_transit_orders(date, component, df_historico_pedidos):
-    df_hist = df_historico_pedidos[df_historico_pedidos["PRODUTO"] == component].copy()
+    df_hist = df_historico_pedidos[df_historico_pedidos["PRODUTO"] == component].copy(
+    )
     df_hist = df_hist[df_hist["DATA_SI"] <= date]
-    df_hist = df_hist[(df_hist["ENTREGA_EFET"].isna()) | (df_hist["ENTREGA_EFET"] > date)]
+    df_hist = df_hist[(df_hist["ENTREGA_EFET"].isna()) |
+                      (df_hist["ENTREGA_EFET"] > date)]
     return df_hist
+
+
+def get_in_transit_orders_from_pendentes(date, component, df_pedidos_pendentes):
+    """
+    Busca pedidos em trânsito a partir de pedidos_pendentes.
+    Essa fonte é mais completa que historico_pedidos para pedidos não entregues.
+
+    Args:
+        date: Data de referência
+        component: Código do componente
+        df_pedidos_pendentes: DataFrame com pedidos pendentes
+
+    Returns:
+        DataFrame com pedidos em trânsito, com coluna QUANTIDADE para compatibilidade
+    """
+    df_pend = df_pedidos_pendentes[df_pedidos_pendentes["PRODUTO"] == component].copy(
+    )
+    if len(df_pend) > 0:
+        df_pend["DATA_SI"] = pd.to_datetime(df_pend["DATA_SI"])
+        df_pend = df_pend[df_pend["DATA_SI"] <= date]
+        # Renomear coluna para compatibilidade com código existente
+        df_pend = df_pend.rename(columns={"QTDE_NAO_ENTREGUE": "QUANTIDADE"})
+    return df_pend
 
 
 def get_demand_ltrp(base_date, df_forecast, lt_rp, component):
     df_forecast = df_forecast[
-        (df_forecast["Component"] == component) & 
+        (df_forecast["Component"] == component) &
         (df_forecast["base_date"] == base_date)
     ].copy()
-    
+
     if df_forecast.shape[0] == 0:
         return 0.0
 
     df_forecast_low = df_forecast[
-        df_forecast['DATA_PEDIDO'] <= base_date + pd.Timedelta(lt_rp, unit="D") + pd.offsets.MonthEnd(0)
+        df_forecast['DATA_PEDIDO'] <= base_date +
+        pd.Timedelta(lt_rp, unit="D") + pd.offsets.MonthEnd(0)
     ]
-    
+
     if df_forecast_low.shape[0] == 0:
         return 0.0
-    
+
     forecast_span_low = (
-        base_date + pd.Timedelta(lt_rp, unit="D") + pd.offsets.MonthEnd(0) - df_forecast_low['DATA_PEDIDO'].min()
+        base_date + pd.Timedelta(lt_rp, unit="D") +
+        pd.offsets.MonthEnd(0) - df_forecast_low['DATA_PEDIDO'].min()
     )
     forecast_span_low_days = forecast_span_low.days
 
     df_forecast_high = df_forecast[
-        df_forecast['DATA_PEDIDO'] <= base_date + pd.Timedelta(lt_rp, unit="D") + pd.offsets.MonthEnd(2)
+        df_forecast['DATA_PEDIDO'] <= base_date +
+        pd.Timedelta(lt_rp, unit="D") + pd.offsets.MonthEnd(2)
     ]
-    
+
     if df_forecast_high.shape[0] == 0:
         return df_forecast_low["consumption_predicted_month"].sum()
-    
+
     forecast_span_high = (
-        base_date + pd.Timedelta(lt_rp, unit="D") + pd.offsets.MonthEnd(2) - df_forecast_high['DATA_PEDIDO'].min()
+        base_date + pd.Timedelta(lt_rp, unit="D") + pd.offsets.MonthEnd(2) -
+        df_forecast_high['DATA_PEDIDO'].min()
     )
     forecast_span_high_days = forecast_span_high.days
 
@@ -211,15 +266,18 @@ def get_demand_ltrp(base_date, df_forecast, lt_rp, component):
     if forecast_span_high_days == forecast_span_low_days:
         demand = demand_low
     else:
-        demand = demand_low + ((demand_high - demand_low) / (forecast_span_high_days - forecast_span_low_days)) * (lt_rp - forecast_span_low_days)
+        demand = demand_low + ((demand_high - demand_low) / (forecast_span_high_days -
+                               forecast_span_low_days)) * (lt_rp - forecast_span_low_days)
 
     return 0.0 if pd.isna(demand) else demand
 
 
 def calculate_lead_time_by_supplier(df_historico_pedidos):
     df_hist = df_historico_pedidos.copy()
-    df_hist["Calculated_Lead_Time"] = (df_hist["ENTREGA_EFET"] - df_hist["DATA_SI"]).dt.days
-    df_lt_supplier = df_hist.groupby("COD_FORNE")["Calculated_Lead_Time"].mean().reset_index()
+    df_hist["Calculated_Lead_Time"] = (
+        df_hist["ENTREGA_EFET"] - df_hist["DATA_SI"]).dt.days
+    df_lt_supplier = df_hist.groupby(
+        "COD_FORNE")["Calculated_Lead_Time"].mean().reset_index()
     return df_lt_supplier
 
 
@@ -238,10 +296,12 @@ def create_df_lt_rp(
         right_on="Cod_Fornecedor",
         how="left",
     )
-    
-    df_lt_rp = df_lt_rp.merge(df_lt_supplier, how='left', left_on='Cod_Fornecedor', right_on='COD_FORNE')
-    
-    df_lt_rp = df_lt_rp[["Cod_Produto", "Cod_Fornecedor", "Review_Period", "Lead_Time", "Calculated_Lead_Time"]]
+
+    df_lt_rp = df_lt_rp.merge(
+        df_lt_supplier, how='left', left_on='Cod_Fornecedor', right_on='COD_FORNE')
+
+    df_lt_rp = df_lt_rp[["Cod_Produto", "Cod_Fornecedor",
+                         "Review_Period", "Lead_Time", "Calculated_Lead_Time"]]
     df_lt_rp = df_lt_rp.rename(
         columns={
             "Cod_Produto": "Component",
@@ -283,45 +343,40 @@ def create_main_dataframe(
     df_compiled_components,
     usage_date: pd.Timestamp,
     days_since_base,
-    audit_list=None # Novo parâmetro para auditoria
+    df_pedidos_pendentes=None  # Novo: fonte para pedidos em trânsito
 ):
     df_vendas["DATA"] = pd.to_datetime(df_vendas["DATA"])
-    df_vendas_12meses = df_vendas[df_vendas["DATA"] >= (base_date - pd.DateOffset(months=12))]
+    df_vendas_12meses = df_vendas[df_vendas["DATA"]
+                                  >= (base_date - pd.DateOffset(months=12))]
 
     df_main = pd.DataFrame()
-    
-    # 3. FILTRO: COMPONENTES SEM ESTOQUE ATUAL
-    mask_in_stock = df_compiled_components["Cod_Produto"].isin(df_estoque_atual["CODIGO_PI"])
-    
-    if audit_list is not None and (~mask_in_stock).sum() > 0:
-        removed_stock = df_compiled_components[~mask_in_stock].copy()
-        audit_stock = removed_stock[['Cod_Produto']].rename(columns={'Cod_Produto': 'Cod_component'})
-        audit_stock['origem'] = 'create_main_dataframe'
-        audit_stock['motivo'] = 'Produto nao encontrado em estoque_atual'
-        audit_list.append(audit_stock)
 
+    # 3. FILTRO: COMPONENTES SEM ESTOQUE ATUAL
+    mask_in_stock = df_compiled_components["Cod_Produto"].isin(
+        df_estoque_atual["CODIGO_PI"])
     df_compiled_components = df_compiled_components[mask_in_stock]
-    
+
     current_date = base_date + pd.DateOffset(days_since_base, "D")
     max_available_date = df_inventory_histories["date"].max()
     actual_inventory_date = min(current_date, max_available_date)
-    
+
     if current_date > max_available_date:
-        print(f"Warning: Using latest available date: {actual_inventory_date.date()}")
-    
+        print(
+            f"Warning: Using latest available date: {actual_inventory_date.date()}")
+
     # Pivotar para performance
     print("Criando pivot do histórico de estoque...")
     df_inventory_pivot = df_inventory_histories.pivot(
         index="date", columns="Componente", values="QTD_ESTOQUE"
     ).fillna(0)
-    
+
     # Lista para coletar componentes sem histórico (Filtro 4)
     missing_history_list = []
 
     for i, row in df_compiled_components.iterrows():
         component = row["Cod_Produto"]
         data_row = {}
-        
+
         # 4. FILTRO: SEM HISTÓRICO DE ESTOQUE
         if component not in df_inventory_pivot.columns:
             missing_history_list.append(component)
@@ -332,68 +387,79 @@ def create_main_dataframe(
         total_sales_expo = df_vendas_comp["QTD_VENDA_EXPORTACAO"].sum()
         total_sales = total_sales_repo + total_sales_expo
         data_row["Sales 12M"] = total_sales
-        
+
         pctg_exportacao = total_sales_expo / total_sales if total_sales > 0 else 0
         data_row[r"% Export 12M"] = pctg_exportacao * 100
 
         # Vendas perdidas
         df_inv_comp = df_inventory_histories[df_inventory_histories["Componente"] == component]
-        df_inv_comp = df_inv_comp[df_inv_comp["date"] >= (base_date - pd.DateOffset(months=12))]
+        df_inv_comp = df_inv_comp[df_inv_comp["date"]
+                                  >= (base_date - pd.DateOffset(months=12))]
         lost_sales_days = df_inv_comp[df_inv_comp["QTD_ESTOQUE"] == 0].shape[0]
         avg_daily_sales = total_sales / 365
         data_row["Lost 12M"] = lost_sales_days * avg_daily_sales
 
         unfullfilled_orders_repo = df_vendas_comp["NAO_ATENDIDOS_REPO"].sum()
         unfullfilled_orders_expo = df_vendas_comp["NAO_ATENDIDOS_EXPO"].sum()
-        data_row["Unfulfilled 12M"] = unfullfilled_orders_repo + unfullfilled_orders_expo
+        data_row["Unfulfilled 12M"] = unfullfilled_orders_repo + \
+            unfullfilled_orders_expo
 
         # Estoque do histórico
         current_stock = df_inventory_pivot.loc[actual_inventory_date, component]
         data_row["Stock"] = current_stock
         inventory_level = df_inventory_pivot.loc[actual_inventory_date, component]
-        
+
         # Buscar dados de estoque atual
         df_estoque_comp = df_estoque_atual[df_estoque_atual["CODIGO_PI"] == component]
-        
+
         if len(df_estoque_comp) > 0:
-            inspection = df_estoque_comp["QTD_TOT_EST"].values[0]
+            # alterado para usar QTD_TOT_EST_INSP ao invés QTD_TOT_EST
+            inspection = df_estoque_comp["QTD_TOT_EST_INSP"].values[0]
             reserved = df_estoque_comp["QTD_RESE"].values[0]
             if inspection < 0:
                 print(f"⚠️ Inspection negativo para {component}: {inspection}")
         else:
             inspection = 0
             reserved = 0
-        
-        # Pedidos em trânsito
-        df_in_transit = get_in_transit_orders(current_date, component, df_order_history)
-        transit = df_in_transit["QUANTIDADE"].sum() if "QUANTIDADE" in df_in_transit.columns else 0
-        
+
+        # Pedidos em trânsito (usando pedidos_pendentes como fonte principal)
+        if df_pedidos_pendentes is not None:
+            df_in_transit = get_in_transit_orders_from_pendentes(
+                current_date, component, df_pedidos_pendentes)
+        else:
+            df_in_transit = get_in_transit_orders(
+                current_date, component, df_order_history)
+        transit = df_in_transit["QUANTIDADE"].sum(
+        ) if "QUANTIDADE" in df_in_transit.columns else 0
+
         # Cálculo do total
         total_stock = inventory_level + inspection - reserved + transit
-        
+
         data_row["Inventory level"] = inventory_level
         data_row["Inspection"] = inspection
         data_row["Reserved"] = reserved
         data_row["Total Stock"] = total_stock
         data_row["Transit"] = transit
-        
+
         component_has_active_supplier = component in df_lt_rp.index
 
         if component_has_active_supplier:
             df_forn_ativo_comp = df_produto_fornecedor_ativo[
                 df_produto_fornecedor_ativo["Cod_Produto"] == component
             ]
-            
+
             if len(df_forn_ativo_comp) > 0:
                 active_supplier_code = df_forn_ativo_comp["Cod_Fornecedor"].values[0]
-                active_supplier_name = df_forn_ativo_comp["Nome_Fornecedor"].values[0] if not pd.isna(df_forn_ativo_comp["Nome_Fornecedor"].values[0]) else f"Fornecedor_{active_supplier_code}"
+                active_supplier_name = df_forn_ativo_comp["Nome_Fornecedor"].values[0] if not pd.isna(
+                    df_forn_ativo_comp["Nome_Fornecedor"].values[0]) else f"Fornecedor_{active_supplier_code}"
                 active_cod_x = df_forn_ativo_comp["Cod_X"].values[0] if "Cod_X" in df_forn_ativo_comp.columns else None
-                
+
                 # Buscar custo
                 if df_produto_fornecedor.shape[0] > 0:
                     df_custo = df_produto_fornecedor[
-                        (df_produto_fornecedor["PRODUTO"] == component) & 
-                        (df_produto_fornecedor["COD_FORNE"] == active_supplier_code)
+                        (df_produto_fornecedor["PRODUTO"] == component) &
+                        (df_produto_fornecedor["COD_FORNE"]
+                         == active_supplier_code)
                     ]
                     if len(df_custo) > 0:
                         cost = df_custo["CUSTO_PRODUTO"].values[0]
@@ -404,9 +470,9 @@ def create_main_dataframe(
                 else:
                     cost = None
                     currency = None
-                
+
                 lt = int(df_lt_rp.loc[component, "Lead_Time"])
-                
+
                 usage_date_month = usage_date.month
                 extra_rp = 0
                 if str(active_supplier_code) != '2102':
@@ -414,20 +480,21 @@ def create_main_dataframe(
                         extra_rp = 55
                     elif usage_date_month == 11:
                         extra_rp = 30
-                
+
                 rp = int(df_lt_rp.loc[component, "Review_Period"]) + extra_rp
                 ltrp = lt + rp
 
                 has_prediction = row.get("In_Multihorizon_Predictions", False)
-                
+
                 if has_prediction:
                     if component not in df_sob_demanda["Cod_Produto"].values:
-                        df_prod_comp = df_produtos[df_produtos["B1_COD"] == component]
+                        df_prod_comp = df_produtos[df_produtos["B1_COD"]
+                                                   == component]
                         if len(df_prod_comp) > 0:
                             component_group = df_prod_comp["B1_GRUPO"].values[0]
                             mlb = 18 if component_group in ["TC28"] else 999
                             safety_stock = int(calculate_safety_stock(
-                                base_date, component, df_daily_sales, 
+                                base_date, component, df_daily_sales,
                                 df_order_history, lt, method=4, max_lookback=mlb
                             ))
                         else:
@@ -435,21 +502,23 @@ def create_main_dataframe(
                     else:
                         safety_stock = 0
 
-                    demand_ltrp = int(get_demand_ltrp(base_month, df_forecasts, ltrp, component))
+                    demand_ltrp = int(get_demand_ltrp(
+                        base_month, df_forecasts, ltrp, component))
                 else:
                     safety_stock = 0
                     demand_ltrp = 0
-                
+
                 order_sug = int(safety_stock - total_stock + demand_ltrp)
                 order_sug = max(order_sug, 0)
-                
+
                 df_prod_comp = df_produtos[df_produtos["B1_COD"] == component]
                 if len(df_prod_comp) > 0:
                     multiplier = int(df_prod_comp["MULTIPLO_COMPRA"].values[0])
                     component_group = df_prod_comp["B1_GRUPO"].values[0]
                     if component_group in ["TC38"]:
                         multiplier = 12
-                    order_sug = int(np.ceil(order_sug / multiplier) * multiplier)
+                    order_sug = int(
+                        np.ceil(order_sug / multiplier) * multiplier)
                 else:
                     multiplier = 1
             else:
@@ -466,21 +535,9 @@ def create_main_dataframe(
                 currency = None
                 multiplier = None
         else:
-            active_supplier_code = None
-            active_supplier_name = None
-            active_cod_x = None
-            lt = 100
-            rp = 35
-            ltrp = 135
-            safety_stock = None
-            
-            has_prediction = row.get("In_Multihorizon_Predictions", False)
-            demand_ltrp = int(get_demand_ltrp(base_month, df_forecasts, ltrp, component)) if has_prediction else 0
-            
-            order_sug = None
-            cost = None
-            currency = None
-            multiplier = None
+            # Componente não está em df_lt_rp - não deveria chegar aqui
+            # pois df_compiled_components já foi filtrado, mas por segurança:
+            continue
 
         data_row["Supp Cod"] = active_supplier_code
         data_row["Supplier"] = active_supplier_name
@@ -491,29 +548,22 @@ def create_main_dataframe(
         data_row["Safety stock"] = safety_stock
         data_row["Demand (LT+RP)"] = demand_ltrp
         data_row["On demand"] = component in df_sob_demanda["Cod_Produto"].values
-        
+
         if component not in df_excecoes["Cod_Produto"].values:
             data_row["Order sug"] = order_sug
         else:
             data_row["Order sug"] = 0
-            
+
         data_row["Final order"] = data_row["Order sug"]
         data_row["Cost"] = cost
         data_row["Currency"] = currency
         data_row["Component"] = component
         data_row["Multiplier"] = multiplier
-        
+
         data_row = adjust_data_row(data_row)
-        
+
         new_row = pd.DataFrame(data=data_row, index=[component])
         df_main = pd.concat([df_main, new_row])
-
-    # Auditoria do Filtro 4
-    if audit_list is not None and len(missing_history_list) > 0:
-        audit_hist = pd.DataFrame({'Cod_component': missing_history_list})
-        audit_hist['origem'] = 'create_main_dataframe'
-        audit_hist['motivo'] = 'Sem historico em df_inventory_histories (colunas do pivot)'
-        audit_list.append(audit_hist)
 
     dict_produtos_cols = {
         "B1_COD": "B1_COD",
@@ -530,9 +580,10 @@ def create_main_dataframe(
     df_produtos_select = df_produtos_select.set_index("B1_COD")
     df_produtos_select = df_produtos_select.rename(columns=dict_produtos_cols)
 
-    df_main = df_produtos_select.merge(df_main, left_index=True, right_index=True, how="right")
+    df_main = df_produtos_select.merge(
+        df_main, left_index=True, right_index=True, how="right")
     df_main["Total Cost"] = df_main["Final order"] * df_main["Cost"]
-    
+
     df_main = df_main.reindex(
         columns=[
             "Component",
@@ -547,46 +598,53 @@ def create_main_dataframe(
     )
 
     df_main["Total Stock/Sales 12M"] = df_main.apply(
-        lambda row: (row["Total Stock"] / row["Sales 12M"] * 100) if row["Sales 12M"] > 0 else 0,
+        lambda row: (row["Total Stock"] / row["Sales 12M"]
+                     * 100) if row["Sales 12M"] > 0 else 0,
         axis=1
     )
-    
+
     df_main["Order sug/Sales 12M"] = df_main.apply(
-        lambda row: (row["Order sug"] / row["Sales 12M"] * 100) if row["Sales 12M"] > 0 else 0,
+        lambda row: (row["Order sug"] / row["Sales 12M"]
+                     * 100) if row["Sales 12M"] > 0 else 0,
         axis=1
     )
 
     return df_main, missing_history_list
 
+
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # Preparar dados
 df_inventory_histories["date"] = pd.to_datetime(df_inventory_histories["date"])
-df_inventory_histories = df_inventory_histories.sort_values(["date", "Componente"])
+df_inventory_histories = df_inventory_histories.sort_values(
+    ["date", "Componente"])
 latest_date = df_inventory_histories["date"].max()
 
 # Processar df_code_supplier (com tratamento para df_produto_fornecedor vazio)
 if df_produto_fornecedor.shape[0] > 0:
-    df_code_supplier = df_produto_fornecedor[["COD_FORNE", "FORNEC_NOM"]].drop_duplicates()
+    df_code_supplier = df_produto_fornecedor[[
+        "COD_FORNE", "FORNEC_NOM"]].drop_duplicates()
     df_produto_fornecedor_ativo["Nome_Fornecedor"] = df_produto_fornecedor_ativo["Cod_Fornecedor"].map(
         df_code_supplier.set_index("COD_FORNE")["FORNEC_NOM"]
     )
 else:
     print("⚠️ Criando Nome_Fornecedor genérico")
-    df_produto_fornecedor_ativo["Nome_Fornecedor"] = "Fornecedor_" + df_produto_fornecedor_ativo["Cod_Fornecedor"].astype(str)
+    df_produto_fornecedor_ativo["Nome_Fornecedor"] = "Fornecedor_" + \
+        df_produto_fornecedor_ativo["Cod_Fornecedor"].astype(str)
 
-df_products_not_delivered_exportation['PRODUTO'] = df_products_not_delivered_exportation['PRODUTO'].str.strip()
+df_products_not_delivered_exportation['PRODUTO'] = df_products_not_delivered_exportation['PRODUTO'].str.strip(
+)
 
 df_components_not_delivered_exportation = df_products_not_delivered_exportation.merge(
     df_estru_produtos, how='left', right_on='COD_PRODUTO', left_on='PRODUTO'
 )
 df_components_not_delivered_exportation["NAO_ATENDIDOS_EXPO"] = (
-    df_components_not_delivered_exportation["G1_QUANT"] * 
+    df_components_not_delivered_exportation["G1_QUANT"] *
     df_components_not_delivered_exportation["QUANT_BO"]
 )
 
 df_components_not_delivered_exportation_grouped = (
     df_components_not_delivered_exportation
-    .groupby(['COD_COMPONENTE','DT_ENTREGA'])['NAO_ATENDIDOS_EXPO']
+    .groupby(['COD_COMPONENTE', 'DT_ENTREGA'])['NAO_ATENDIDOS_EXPO']
     .sum()
     .reset_index()
 )
@@ -600,36 +658,52 @@ df_components_not_delivered_exportation_grouped["NAO_ATENDIDOS_REPO"] = 0
 columns = df_components_not_delivered_exportation_grouped.columns.tolist()
 columns.remove("NAO_ATENDIDOS_EXPO")
 columns.append("NAO_ATENDIDOS_EXPO")
-df_components_not_delivered_exportation_grouped = df_components_not_delivered_exportation_grouped.reindex(columns, axis=1)
+df_components_not_delivered_exportation_grouped = df_components_not_delivered_exportation_grouped.reindex(
+    columns, axis=1)
 
 df_components_not_delivered_exportation_grouped.rename(
-    columns={"COD_COMPONENTE": "B1_COD_PP", "DT_ENTREGA": "DATA"}, 
+    columns={"COD_COMPONENTE": "B1_COD_PP", "DT_ENTREGA": "DATA"},
     inplace=True
 )
 
-df_vendas_with_exportacao = pd.concat([df_vendas, df_components_not_delivered_exportation_grouped], ignore_index=True)
+df_vendas_with_exportacao = pd.concat(
+    [df_vendas, df_components_not_delivered_exportation_grouped], ignore_index=True)
 df_vendas_with_exportacao = (
     df_vendas_with_exportacao
     .groupby(['B1_COD_PP', 'DATA'])[
-        ["QTD_VENDA_NACIONAL", "RECEITA_VENDA_NACIONAL", "QTD_VENDA_EXPORTACAO", 
+        ["QTD_VENDA_NACIONAL", "RECEITA_VENDA_NACIONAL", "QTD_VENDA_EXPORTACAO",
          "RECEITA_VENDA_EXPORTACAO", "NAO_ATENDIDOS_REPO", "NAO_ATENDIDOS_EXPO"]
     ]
     .sum()
     .reset_index()
 )
 
-df_historico_pedidos["DATA_SI"] = pd.to_datetime(df_historico_pedidos["DATA_SI"])
-df_historico_pedidos["ENTREGA_EFET"] = pd.to_datetime(df_historico_pedidos["ENTREGA_EFET"])
+df_historico_pedidos["DATA_SI"] = pd.to_datetime(
+    df_historico_pedidos["DATA_SI"])
+df_historico_pedidos["ENTREGA_EFET"] = pd.to_datetime(
+    df_historico_pedidos["ENTREGA_EFET"])
 
 df_lt_rp = create_df_lt_rp(
     df_multi_horizon_pred_component["Component"].unique(),
-    df_produto_fornecedor, 
-    df_produto_fornecedor_ativo, 
+    df_produto_fornecedor,
+    df_produto_fornecedor_ativo,
     df_parametro_fornecedor,
     df_historico_pedidos
 )
 
 base_months = list(df_multi_horizon_pred_component["base_date"].unique())
+
+# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
+# CORREÇÃO: Filtrar df_compiled_components para manter APENAS componentes
+# que estão em df_lt_rp (têm fornecedor ativo E custo cadastrado)
+# Isso remove tanto os auditados (sem custo) quanto os que nunca tiveram fornecedor
+componentes_validos = set(df_lt_rp.index)
+antes = len(df_compiled_components)
+df_compiled_components = df_compiled_components[
+    df_compiled_components['Cod_Produto'].isin(componentes_validos)
+]
+depois = len(df_compiled_components)
+print(f"📋 df_compiled_components filtrado por df_lt_rp: {antes} → {depois} ({antes - depois} removidos)")
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 df_main_all_bases = pd.DataFrame()
@@ -638,10 +712,9 @@ usage_date = latest_date
 for base_month in base_months:
     days_since_base = 0
     base_date = base_month + pd.offsets.MonthEnd(0)
-    
+
     print(f"\nProcessando base_month: {pd.Timestamp(base_month).date()}")
-    
-    # Passando lista_dfs_sem_match para auditoria
+
     df_main, components_without_inventory_history = create_main_dataframe(
         df_daily_portalvendas_components,
         df_vendas,
@@ -660,12 +733,13 @@ for base_month in base_months:
         df_compiled_components,
         usage_date,
         days_since_base,
-        audit_list=lista_dfs_sem_match # Auditando
+        df_pedidos_pendentes=df_pedidos_pendentes  # Fonte correta para Transit
     )
-    
+
     df_main["base_month"] = base_month
     df_main["base_date"] = base_date
-    df_main_all_bases = pd.concat([df_main_all_bases, df_main], ignore_index=True)
+    df_main_all_bases = pd.concat(
+        [df_main_all_bases, df_main], ignore_index=True)
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 last_base_month = latest_date
@@ -673,7 +747,6 @@ last_available_date = df_inventory_histories["date"].max()
 
 print(f"\nProcessando última data: {pd.Timestamp(last_available_date).date()}")
 
-# Passando lista_dfs_sem_match para auditoria
 df_main_last, _ = create_main_dataframe(
     df_daily_portalvendas_components,
     df_vendas,
@@ -692,12 +765,13 @@ df_main_last, _ = create_main_dataframe(
     df_compiled_components,
     usage_date,
     0,
-    audit_list=lista_dfs_sem_match # Auditando
+    df_pedidos_pendentes=df_pedidos_pendentes  # Fonte correta para Transit
 )
 
 df_main_last["base_month"] = last_base_month
 df_main_last["base_date"] = last_available_date
-df_main_all_bases = pd.concat([df_main_all_bases, df_main_last], ignore_index=True)
+df_main_all_bases = pd.concat(
+    [df_main_all_bases, df_main_last], ignore_index=True)
 
 df_main_all_bases = df_main_all_bases.reset_index(drop=True)
 
@@ -710,16 +784,22 @@ else:
     df_sem_match = pd.DataFrame(columns=['Cod_component', 'origem', 'motivo'])
 
 # Garantir a ordem das colunas e remover duplicatas (pois o loop roda várias vezes)
-df_sem_match = df_sem_match[['Cod_component', 'origem', 'motivo']].drop_duplicates()
-Helpers.save_output_dataset(context=context, output_name='df_sem_match_atual_4', data_frame=df_sem_match)
+df_sem_match = df_sem_match[['Cod_component',
+                             'origem', 'motivo']].drop_duplicates()
+Helpers.save_output_dataset(
+    context=context, output_name='df_sem_match', data_frame=df_sem_match)
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 print(f"\n{'='*60}")
 print(f"RESULTADOS")
 print(f"{'='*60}")
 print(f"Total de linhas: {df_main_all_bases.shape[0]}")
-print(f"Componentes únicos: {df_main_all_bases['Component'].nunique() if 'Component' in df_main_all_bases.columns else 'N/A'}")
+print(
+    f"Componentes únicos: {df_main_all_bases['Component'].nunique() if 'Component' in df_main_all_bases.columns else 'N/A'}")
 print(f"{'='*60}\n")
-Helpers.save_output_dataset(context=context, output_name="lt_rp", data_frame=df_lt_rp)
-Helpers.save_output_dataset(context=context, output_name="df_vendas_with_exportacao", data_frame=df_vendas_with_exportacao)
-Helpers.save_output_dataset(context=context, output_name="main", data_frame=df_main_all_bases)
+Helpers.save_output_dataset(
+    context=context, output_name="lt_rp", data_frame=df_lt_rp)
+Helpers.save_output_dataset(
+    context=context, output_name="df_vendas_with_exportacao", data_frame=df_vendas_with_exportacao)
+Helpers.save_output_dataset(
+    context=context, output_name="main", data_frame=df_main_all_bases)

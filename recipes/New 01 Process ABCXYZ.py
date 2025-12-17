@@ -15,155 +15,6 @@ from utils.notebookhelpers.helpers import Helpers
 context = Helpers.getOrCreateContext(contextId='contextId', localVars=locals())
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# ================================================================================
-  # RECIPE: new_01_process_abcxyz
-  # ================================================================================
-  # DEPENDÊNCIAS: Este recipe requer os seguintes datasets:
-  #     1. df_estrutura_produto (estrutura BOM limpa)
-  #     2 sku_abc_xyz (produtos pré-classificados com atribuições ABC-XYZ)
-  #     3. portal_vendas (histórico de transações de vendas)
-  # ================================================================================
-  #
-  # PROPÓSITO: Pipeline ML com classificação ABC-XYZ dupla (volume + volatilidade),
-  #            treinando modelos XGBoost separados por cluster de 9 células para
-  #            previsões multi-horizonte mais precisas baseadas em padrões de demanda.
-  #
-  # INPUTS:
-  #   - portal_vendas (transações históricas de vendas)
-  #   - df_estrutura_produto (BOM para explosão componente-produto)
-  #   - sku_abc_xyz (classificação ABC-XYZ pré-existente)
-  #
-  # OUTPUTS:
-  #   - new_multihorizon_products_abcxyz (previsões produtos com ABC-XYZ)
-  #   - new_multihorizon_components_abcxyz (previsões componentes com ABC-XYZ)
-  #
-  # FILTROS APLICADOS:
-  #   1. Classificação ABC via Pareto (linhas 204-219): Separa por volume acumulado
-  #      Exemplo: Classe A = até 80% valor, B = 80-95%, C = 95-100%
-  #      * Consequência: Produtos de alto volume recebem modelo específico
-  #
-  #   2. Classificação XYZ via CV (linhas 224-240): Separa por volatilidade
-  #      Exemplo: X = CV < 0.5, Y = 0.5-1.0, Z ≥ 1.0
-  #      * Consequência: Produtos estáveis vs voláteis recebem modelos diferentes
-  #
-  #   3. Matriz ABC-XYZ (linha 249): Combina ambas classificações
-  #      Exemplo: classe_abc_xyz = classe_abc + classe_xyz (ex: "AX", "BZ")
-  #      * Consequência: Cria até 9 clusters distintos (AX, AY, AZ, BX, BY, BZ, CX, CY, CZ)
-  #
-  #   4. Rolling com shift(1) (linhas 614-636): Previne data leakage
-  #      Exemplo: shifted_series = df.groupby("COD_MTE_COMP")["QTDE_PEDIDA"].shift(1)
-  #      * Consequência: Rolling statistics não usam dados futuros
-  #
-  #   5. Filtro últimos 2 anos (linhas 520-527): Limita janela temporal
-  #      Exemplo: df[(df['DATA_PEDIDO'] >= start_date) & (df['DATA_PEDIDO'] < last_month)]
-  #      * Consequência: Treina apenas com dados recentes, descarta histórico antigo
-  #
-  # LÓGICA:
-  #   FASE 1 - CARREGAMENTO (linhas 461-468):
-  #     1. Carrega 5 datasets de entrada
-  #     2. Valida conteúdo (verifica erros SQL)
-  #
-  #   FASE 2 - PRÉ-PROCESSAMENTO (linhas 480-575):
-  #     1. Remove última linha incompleta
-  #     2. Sanitiza nomes de colunas (remove espaços, caracteres especiais)
-  #     3. Converte tipos de dados (datetime, category, float64)
-  #     4. Filtra últimos 2 anos de dados
-  #     5. Filtra produtos que usam componentes importados (começam com "T")
-  #     6. Agrega vendas por mês
-  #
-  #   FASE 3 - CLASSIFICAÇÃO DUPLA ABC-XYZ (linhas 200-260):
-  #     1. ABC (Volume):
-  #        - Agrega vendas totais por produto no período de treino
-  #        - Ordena produtos por volume decrescente
-  #        - Calcula percentual acumulado (Pareto)
-  #        - Classe A = até 80%, B = 80-95%, C = 95-100%
-  #     2. XYZ (Volatilidade):
-  #        - Calcula média e desvio padrão por produto
-  #        - CV = std / mean (Coeficiente de Variação)
-  #        - Classe X = CV < 0.5, Y = 0.5-1.0, Z ≥ 1.0
-  #     3. Combina: classe_abc_xyz = ABC + XYZ (ex: "AX", "BZ")
-  #
-  #   FASE 4 - ENGENHARIA DE FEATURES (linhas 590-655):
-  #     1. Features temporais: YEAR, MONTH, month_of_sequence
-  #     2. Lags: 1-12 meses
-  #     3. Diffs: diferenças 1-12 períodos
-  #     4. Rolling statistics (COM shift(1) para evitar leakage):
-  #        - roll_mean_1 a roll_mean_12
-  #        - roll_std_1 a roll_std_12
-  #        - roll_min_1 a roll_min_12
-  #        - roll_max_1 a roll_max_12
-  #     5. One-hot encoding de COD_MTE_COMP
-  #     6. Target: sales_next_1_month
-  #
-  #   FASE 5 - TREINAMENTO ABC (linhas 168-454):
-  #     1. Para cada classe ABC (A, B, C):
-  #        - Separa dados treino/teste da classe
-  #        - RandomizedSearchCV com TimeSeriesSplit
-  #        - Grid de hiperparâmetros específico por classe
-  #        - Treina modelo XGBoost
-  #        - Armazena em abc_models['models'][classe]
-  #     2. Retorna ensemble_model com product_class_map + product_xyz_map
-  #
-  #   FASE 6 - PREVISÃO RECURSIVA (linhas 884-955):
-  #     1. Para cada mês futuro (1 a 12):
-  #        - Gera features com get_features()
-  #        - Identifica classe ABC-XYZ do produto
-  #        - Aplica modelo XGBoost da classe via predict_ensemble()
-  #        - Adiciona previsão aos dados históricos
-  #        - Usa previsão como input para próximo mês
-  #
-  #   FASE 7 - EXPLOSÃO BOM (linhas 1076-1084):
-  #     1. Para cada produto previsto:
-  #        - Busca componentes em df_estrutura_produto
-  #        - Multiplica venda_produto × quantidade_componente
-  #        - Agrega consumo por componente e mês
-  #
-  #   FASE 8 - PROPAGAÇÃO CLASSIFICAÇÃO (linhas 1089-1149):
-  #     1. Componentes herdam classificação ABC-XYZ dos produtos:
-  #        - Prioriza classe mais importante (A > B > C, X > Y > Z)
-  #        - Se componente usado por produto A e C, herda "A"
-  #
-  # EXEMPLO COMPLETO:
-  #   INPUT:
-  #     portal_vendas: PROD001 vendeu 1000 unidades (média=1000, std=200)
-  #     Vendas totais 12m: 12000 (70% acumulado na curva Pareto)
-  #     df_estrutura_produto: PROD001 usa 1.5× COMP123
-  #   
-  #   PROCESSAMENTO:
-  #   → Classificação ABC: PROD001 → Classe A (70% < 80%)
-  #   → Classificação XYZ: CV = 200/1000 = 0.2 → Classe X (estável)
-  #   → Matriz: classe_abc_xyz = "AX"
-  #   → Features: Cria lags, médias móveis, sazonalidade
-  #   → Treino: Modelo XGBoost específico para Classe A com grid otimizado
-  #   → Previsão mês 1: Modelo A prevê 1050 unidades para 2025-01
-  #   → Previsão mês 2: Usa 1050 como lag_1, prevê 1100 para 2025-02
-  #   → Explosão BOM: COMP123 consumo = 1050 × 1.5 = 1575 em 2025-01
-  #   → Propagação: COMP123 herda classe_abc="A", classe_xyz="X"
-  #   
-  #   OUTPUT new_multihorizon_products_abcxyz:
-  #   {
-  #     "COD_MTE_COMP": "PROD001",
-  #     "DATA_PEDIDO": "2025-01-01",
-  #     "base_date": "2024-12-01",
-  #     "QTDE_PEDIDA": 1050,
-  #     "classe_abc": "A",
-  #     "classe_xyz": "X",
-  #     "classe_abc_xyz": "AX"
-  #   }
-  #   
-  #   OUTPUT new_multihorizon_components_abcxyz:
-  #   {
-  #     "Component": "COMP123",
-  #     "DATA_PEDIDO": "2025-01-01",
-  #     "base_date": "2024-12-01",
-  #     "consumption_predicted_month": 1575,
-  #     "classe_abc": "A",
-  #     "classe_xyz": "X",
-  #     "classe_abc_xyz": "AX"
-  #   }
-  # ================================================================================
-
-# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 import logging
 import holidays
 import pandas as pd
@@ -179,10 +30,6 @@ logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.INFO)
 pd.set_option("display.max_columns", None)
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# ==================================================================================
-# FUNÇÕES AUXILIARES DE MÉTRICAS
-# ==================================================================================
-
 def wmape(y_true, y_pred):
     """Weighted Mean Absolute Percentage Error"""
     return np.sum(np.abs(y_true - y_pred))/np.sum(np.abs(y_true))
@@ -201,53 +48,24 @@ def mape(y_true, y_pred):
     return np.mean(ape)
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# ==================================================================================
-# FUNÇÃO: predict_ensemble (VERSÃO UNIFICADA)
-# ==================================================================================
-
 def predict_ensemble(model_dict, df_features):
     """
     Faz previsões usando modelos ABC/XYZ agrupados por cluster.
-    
-    COMPATÍVEL COM:
-    - Modelo ABC-XYZ (primeiro script): usa coluna 'ABC_XYZ' pré-existente
-    - Modelo ABC-Pareto (segundo script): usa 'product_class_map' para classificar
-    
-    Parameters:
-    -----------
-    model_dict : dict
-        Dicionário com estrutura: 
-        - {'cluster_name': {'model': XGBRegressor, 'features': list}} OU
-        - {'models': dict, 'feature_names': list, 'product_class_map': dict}
-    df_features : DataFrame
-        DataFrame com features
-        
-    Returns:
-    --------
-    predictions : numpy array
-        Array com previsões
     """
     
-    # ============================================================================
-    # DETECTAR TIPO DE MODELO
-    # ============================================================================
-    
-    # Tipo 1: Modelo ABC-Pareto (segundo script)
+    # Tipo 1: Modelo ABC-Pareto
     if 'product_class_map' in model_dict and 'feature_names' in model_dict:
         print("     -> Usando modelo ABC-Pareto (classificação dinâmica)")
         
         features = model_dict['feature_names']
         product_class_map = model_dict['product_class_map']
         
-        # Verificar se todas as features estão no dataframe
         missing_features = set(features) - set(df_features.columns)
         if missing_features:
             raise ValueError(f"Features faltando no dataframe: {missing_features}")
         
-        # Preparar dados de features
         X = df_features[features].fillna(0).astype('float64')
         
-        # Classificar linhas (assumindo que COD_MTE_COMP existe)
         if 'COD_MTE_COMP' not in df_features.columns:
             raise ValueError("COD_MTE_COMP não encontrado. É necessário para roteamento ABC.")
         
@@ -274,7 +92,7 @@ def predict_ensemble(model_dict, df_features):
         
         return np.maximum(predictions, 0)
     
-    # Tipo 2: Modelo ABC-XYZ (primeiro script)
+    # Tipo 2: Modelo ABC-XYZ
     elif 'ABC_XYZ' in df_features.columns:
         print("     -> Usando modelo ABC-XYZ (coluna pré-existente)")
         
@@ -291,7 +109,6 @@ def predict_ensemble(model_dict, df_features):
             cluster_model = model_dict[cluster]['model']
             cluster_features = model_dict[cluster]['features']
             
-            # Verificar se todas as features necessárias estão presentes
             missing_features = set(cluster_features) - set(df_features.columns)
             if missing_features:
                 print(f"⚠️ Features faltando para cluster {cluster}: {missing_features}")
@@ -310,33 +127,10 @@ def predict_ensemble(model_dict, df_features):
         raise ValueError("Formato de modelo não reconhecido. Esperado 'product_class_map' ou 'ABC_XYZ' em df_features")
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# ==================================================================================
-# FUNÇÃO: train_abc_models (DO SEGUNDO SCRIPT - ADAPTADA)
-# ==================================================================================
-
 def train_abc_models(df_train, df_test, features, user_param_grid=None, n_iter_search=50, 
                      cod_mte_comp='COD_MTE_COMP'):
     """
     Treina um modelo XGBoost separado para cada classe ABC usando classificação Pareto.
-    
-    Parameters:
-    -----------
-    df_train : DataFrame
-        Dados de treino com features já criadas
-    df_test : DataFrame
-        Dados de teste
-    features : list
-        Lista de nomes das features a usar
-    user_param_grid : dict, optional
-        Grid de hiperparâmetros por classe {'A': {...}, 'B': {...}, 'C': {...}}
-    n_iter_search : int
-        Número de iterações para RandomizedSearchCV
-    cod_mte_comp : str
-        Nome da coluna de código do produto
-        
-    Returns:
-    --------
-    tuple: (abc_models, y_train, y_pred_train, y_test, y_pred_test)
     """
     
     print("=" * 80)
@@ -346,16 +140,11 @@ def train_abc_models(df_train, df_test, features, user_param_grid=None, n_iter_s
     if user_param_grid is None:
         user_param_grid = {}
 
-    # ============================================================================
-    # 1. CLASSIFICAÇÃO ABC (Baseada no volume total de treino por PRODUTO)
-    # ============================================================================
     print("📊 Classificando produtos (ABC) com base no volume total de treino...")
     
-    # Agrega vendas totais por produto no período de treino
     df_train_agg = df_train.groupby(cod_mte_comp)['QTDE_PEDIDA'].sum().reset_index()
     df_train_agg = df_train_agg.sort_values('QTDE_PEDIDA', ascending=False).reset_index(drop=True)
     
-    # Calcular Pareto
     df_train_agg['cumsum'] = df_train_agg['QTDE_PEDIDA'].cumsum()
     total_sales = df_train_agg['QTDE_PEDIDA'].sum()
     df_train_agg['cumsum_pct'] = (df_train_agg['cumsum'] / total_sales) * 100
@@ -367,20 +156,12 @@ def train_abc_models(df_train, df_test, features, user_param_grid=None, n_iter_s
     
     df_train_agg['classe_abc'] = df_train_agg['cumsum_pct'].apply(get_abc_class)
     
-    # ============================================================================
-    # 2. CLASSIFICAÇÃO XYZ (Baseada na volatilidade - Coeficiente de Variação)
-    # ============================================================================
     print("📊 Classificando produtos (XYZ) com base na volatilidade...")
     
-    # Calcular estatísticas por produto
     df_train_volatility = df_train.groupby(cod_mte_comp)['QTDE_PEDIDA'].agg(['mean', 'std']).reset_index()
     df_train_volatility['cv'] = df_train_volatility['std'] / df_train_volatility['mean'].replace(0, np.nan)
     df_train_volatility['cv'] = df_train_volatility['cv'].fillna(0)
     
-    # Definir thresholds para classificação XYZ
-    # X: CV < 0.5 (baixa variabilidade)
-    # Y: 0.5 <= CV < 1.0 (média variabilidade)
-    # Z: CV >= 1.0 (alta variabilidade)
     def get_xyz_class(cv):
         if cv < 0.5: return 'X'
         elif cv < 1.0: return 'Y'
@@ -388,21 +169,17 @@ def train_abc_models(df_train, df_test, features, user_param_grid=None, n_iter_s
     
     df_train_volatility['classe_xyz'] = df_train_volatility['cv'].apply(get_xyz_class)
     
-    # Merge ABC + XYZ
     df_train_agg = pd.merge(df_train_agg, 
                             df_train_volatility[[cod_mte_comp, 'cv', 'classe_xyz']], 
                             on=cod_mte_comp, 
                             how='left')
     
-    # Criar classificação combinada ABC-XYZ
     df_train_agg['classe_abc_xyz'] = df_train_agg['classe_abc'] + df_train_agg['classe_xyz']
     
-    # Criar mapas de Produto -> Classe
     product_class_map = df_train_agg.set_index(cod_mte_comp)['classe_abc'].to_dict()
     product_xyz_map = df_train_agg.set_index(cod_mte_comp)['classe_xyz'].to_dict()
     product_abc_xyz_map = df_train_agg.set_index(cod_mte_comp)['classe_abc_xyz'].to_dict()
     
-    # Mapear classes para os dataframes de treino e teste
     classes_train = df_train[cod_mte_comp].map(product_class_map).fillna('C').values
     classes_test = df_test[cod_mte_comp].map(product_class_map).fillna('C').values
     
@@ -427,17 +204,12 @@ def train_abc_models(df_train, df_test, features, user_param_grid=None, n_iter_s
     print(f"       Classe Y: {n_Y} linhas ({n_Y/len(classes_xyz_train)*100:.1f}%)")
     print(f"       Classe Z: {n_Z} linhas ({n_Z/len(classes_xyz_train)*100:.1f}%)")
     
-    # Mostrar distribuição da matriz ABC-XYZ
     print(f"\n    Matriz ABC-XYZ (Top 5 combinações):")
     abc_xyz_counts = pd.Series(classes_abc_xyz_train).value_counts().head(5)
     for abc_xyz, count in abc_xyz_counts.items():
         print(f"       {abc_xyz}: {count} linhas ({count/len(classes_abc_xyz_train)*100:.1f}%)")
     print()
 
-    # ============================================================================
-    # 2. PREPARAR DADOS E MODELOS
-    # ============================================================================
-    # Verificar qual nome de coluna target existe
     target_col = 'sales_next_1_month' if 'sales_next_1_month' in df_train.columns else 'sales_next_month'
     
     X_train = df_train[features].fillna(0).astype('float64')
@@ -456,7 +228,6 @@ def train_abc_models(df_train, df_test, features, user_param_grid=None, n_iter_s
     y_pred_train = np.zeros(len(y_train))
     y_pred_test = np.zeros(len(y_test))
 
-    # Parâmetros default
     default_xgb_params = {
         'n_estimators': 500,
         'max_depth': 10,
@@ -472,9 +243,6 @@ def train_abc_models(df_train, df_test, features, user_param_grid=None, n_iter_s
         'n_jobs': -1
     }
 
-    # ============================================================================
-    # 3. TREINAR MODELO PARA CADA CLASSE
-    # ============================================================================
     for classe in ['A', 'B', 'C']:
         print("-" * 60)
         print(f"🧠 Treinando Modelo para CLASSE {classe}")
@@ -491,7 +259,6 @@ def train_abc_models(df_train, df_test, features, user_param_grid=None, n_iter_s
         
         model_classe = None
         
-        # --- Lógica do GridSearch ---
         if classe in user_param_grid:
             print(f"    🔍 Executando RandomizedSearchCV para Classe {classe} (n_iter={n_iter_search})...")
             param_grid = user_param_grid[classe]
@@ -530,35 +297,26 @@ def train_abc_models(df_train, df_test, features, user_param_grid=None, n_iter_s
                 model_classe = xgb.XGBRegressor(**default_xgb_params)
                 model_classe.fit(X_train_classe, y_train_classe)
         
-        # --- Lógica de Treino Padrão ---
         else:
             print(f"    ⚙️  Treinando Classe {classe} com parâmetros padrão...")
             model_classe = xgb.XGBRegressor(**default_xgb_params)
             model_classe.fit(X_train_classe, y_train_classe)
         
-        # Armazenar modelo
         abc_models['models'][classe] = model_classe
         
-        # Prever no treino
         pred_train_classe = model_classe.predict(X_train_classe)
         y_pred_train[mask_train] = pred_train_classe
         
-        # Prever no teste
         mask_test = (classes_test == classe)
         X_test_classe = X_test[mask_test]
         if not X_test_classe.empty:
             pred_test_classe = model_classe.predict(X_test_classe)
             y_pred_test[mask_test] = pred_test_classe
         
-        # Métricas de treino da classe
         mae_train_classe = mean_absolute_error(y_train_classe, pred_train_classe)
         mape_train_classe = mape(y_train_classe, pred_train_classe)
         print(f"    📈 Classe {classe} (Treino) - MAE: {mae_train_classe:.2f} | MAPE: {mape_train_classe:.4f}")
 
-    # ============================================================================
-    # 4. MÉTRICAS FINAIS (COMBINADAS)
-    # ============================================================================
-    
     y_pred_train = np.maximum(y_pred_train, 0)
     y_pred_test = np.maximum(y_pred_test, 0)
     
@@ -603,10 +361,6 @@ def train_abc_models(df_train, df_test, features, user_param_grid=None, n_iter_s
     )
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# ==================================================================================
-# CARREGAR DADOS
-# ==================================================================================
-
 df_estrutura = Helpers.getEntityData(context, 'df_estrutura_produto')
 df_estrutura.columns = ["Codigo", "Componente", "Quantidade"] 
 df_sku_abc_xyz = Helpers.getEntityData(context, 'sku_abc_xyz')
@@ -614,7 +368,6 @@ df_sku_abc_xyz = Helpers.getEntityData(context, 'sku_abc_xyz')
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 df_portalvendas = Helpers.getEntityData(context, 'portal_vendas')
 
-# Debug: verificar o conteúdo
 print("Shape do DataFrame:", df_portalvendas.shape)
 print("Primeiras linhas:")
 print(df_portalvendas.head())
@@ -624,27 +377,15 @@ if 'Msg_' in df_portalvendas.columns[0]:
     raise ValueError("Arquivo portal_vendas contém mensagens de erro SQL ao invés de dados. Por favor, re-exporte o arquivo corretamente.")
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# ==============================================================================
-# AUDITORIA DE DADOS REMOVIDOS
-# ==============================================================================
-
-# Lista para armazenar os dataframes de linhas removidas
 lista_dfs_removidos = []
 
-# ------------------------------------------------------------------------------
-# 1. Filtro: Remover última linha (Rodapé/Inválida)
-# ------------------------------------------------------------------------------
-# Captura a linha que será removida
 row_tail = df_portalvendas.tail(1).copy()
 row_tail['motivo'] = 'Linha de rodape/invalida'
 
-# Adiciona à lista
 lista_dfs_removidos.append(row_tail)
 
-# Aplica o filtro no dataframe principal
 df_portalvendas = df_portalvendas.drop(df_portalvendas.tail(1).index)
 
-# Sanitize all column names
 df_portalvendas.columns = (
     df_portalvendas.columns.str.replace(" ", "_")
     .str.replace("._", "_", regex=False)
@@ -652,7 +393,6 @@ df_portalvendas.columns = (
 )
 print(df_portalvendas.columns)
 
-# Use a dictionary with the corrected keys
 dict_columns_types = {
     "NR_DO_PEDIDO_MTE": "object",
     "DATA_PEDIDO": "datetime64[ns]",
@@ -680,9 +420,6 @@ df_portalvendas = df_portalvendas.astype(dict_columns_types)
 print("After transformation")
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# ------------------------------------------------------------------------------
-# 2. Filtro: Janela Temporal (2 Anos e Mês Incompleto)
-# ------------------------------------------------------------------------------
 filter_last_2years = False
 
 if filter_last_2years:
@@ -690,19 +427,16 @@ if filter_last_2years:
     last_date_first_day_of_month = pd.Timestamp(f"{last_date.year}-{last_date.month:02d}-01")
     start_date = last_date_first_day_of_month - pd.DateOffset(years=2)
     
-    # A. Captura dados muito antigos
     mask_antigos = df_portalvendas['DATA_PEDIDO'] < start_date
     df_sem_match_antigo = df_portalvendas[mask_antigos].copy()
     df_sem_match_antigo['motivo'] = 'Dados antigos (> 2 anos)'
     lista_dfs_removidos.append(df_sem_match_antigo)
     
-    # B. Captura mês corrente incompleto
     mask_mes_incompleto = df_portalvendas['DATA_PEDIDO'] >= last_date_first_day_of_month
     df_sem_match_futuro = df_portalvendas[mask_mes_incompleto].copy()
     df_sem_match_futuro['motivo'] = 'Mes corrente incompleto'
     lista_dfs_removidos.append(df_sem_match_futuro)
     
-    # Aplica o filtro (mantém apenas o miolo válido)
     df_portalvendas = df_portalvendas[
         (df_portalvendas['DATA_PEDIDO'] >= start_date) & 
         (df_portalvendas['DATA_PEDIDO'] < last_date_first_day_of_month)
@@ -725,41 +459,26 @@ for component in set_components_all:
     )
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# ------------------------------------------------------------------------------
-# 3. Filtro: Apenas Produtos com Componentes Importados (Começam com T)
-# ------------------------------------------------------------------------------
 def refresh_categories(df, column_name):
     df.loc[:, column_name] = df[column_name].cat.set_categories(df[column_name].cat.remove_unused_categories().unique())
     return df
 
-# Cria máscara dos produtos que NÃO estão na lista de importados
 mask_nao_importados = ~df_portalvendas['COD_MTE_COMP'].isin(set_products_use_imported)
 
-# Captura os removidos
 df_sem_match_skus = df_portalvendas[mask_nao_importados].copy()
 df_sem_match_skus['motivo'] = 'Nao utiliza componentes importados (T)'
 lista_dfs_removidos.append(df_sem_match_skus)
 
-# Aplica o filtro principal
 df_portalvendas_filtered = df_portalvendas[~mask_nao_importados].copy()
 df_portalvendas_filtered = refresh_categories(df_portalvendas_filtered, 'COD_MTE_COMP')
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# ==============================================================================
-# CONSOLIDAÇÃO DO DATAFRAME DE REMOVIDOS
-# ==============================================================================
-
-# Concatena todas as partes removidas
 df_sem_match = pd.concat(lista_dfs_removidos, ignore_index=True)
 
-# Adiciona a coluna de origem fixa
 df_sem_match['origem'] = 'portal_vendas (script: New 01 Process ABCXYZ)'
 
-# Renomeia a coluna de produto para o nome solicitado 'Cod_component'
-# (Nota: No portal de vendas isso é o Produto, mas renomeando conforme pedido)
 df_sem_match.rename(columns={'COD_MTE_COMP': 'Cod_component'}, inplace=True)
 
-# Seleciona apenas as 3 colunas desejadas
 df_sem_match = df_sem_match[['Cod_component', 'origem', 'motivo']]
 Helpers.save_output_dataset(context=context, output_name='df_sem_match_atual_2', data_frame=df_sem_match)
 
@@ -768,20 +487,17 @@ df_portalvendas_filtered = df_portalvendas_filtered[['COD_MTE_COMP', 'DATA_PEDID
 df_preprocessed = df_portalvendas_filtered.copy()
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Create date columns
 df_preprocessed['YEAR_MONTH'] = df_preprocessed['DATA_PEDIDO'].dt.strftime('%Y-%m')
 df_preprocessed['DATE_MONTH'] = df_preprocessed['YEAR_MONTH'].astype(str) + '-01'
 df_preprocessed['DATE_MONTH'] = pd.to_datetime(df_preprocessed['DATE_MONTH'])
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Group by month and fill missing values
 df_agg = df_preprocessed[['COD_MTE_COMP','DATE_MONTH','QTDE_PEDIDA']].copy()
 df_agg = df_agg.groupby(['COD_MTE_COMP','DATE_MONTH']).sum().reset_index()
 df_agg = df_agg.set_index(['DATE_MONTH','COD_MTE_COMP']).unstack(['COD_MTE_COMP']).fillna(0).stack().reset_index()
 df_agg = df_agg.sort_values(by=['COD_MTE_COMP','DATE_MONTH'], ascending=True).reset_index(drop=True)
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Merge com ABC_XYZ (mantém compatibilidade com primeiro script)
 df_agg_abcxyz = pd.merge(df_agg, df_sku_abc_xyz[['SKU_ID', 'ABC_XYZ']], left_on='COD_MTE_COMP', right_on='SKU_ID', how='left')
 df_agg_abcxyz.drop(columns=['SKU_ID'], inplace=True)
 df_agg_abcxyz['ABC_XYZ'].fillna('CZ', inplace=True)
@@ -790,47 +506,34 @@ print("Distribuição ABC_XYZ:")
 print(df_agg_abcxyz[['COD_MTE_COMP', 'ABC_XYZ']].drop_duplicates()['ABC_XYZ'].value_counts())
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# ==================================================================================
-# FUNÇÃO: create_train_dataset
-# ==================================================================================
-
 def create_train_dataset(df_agg):
     """
     Cria dataset de treino com features de lag, diff, rolling e FERIADOS CHINESES.
     """
-    # date time feature 
     df_agg['YEAR'] = df_agg['DATE_MONTH'].dt.year
     df_agg['MONTH'] = df_agg['DATE_MONTH'].dt.month
     
-    # Criar um mapa de (Ano, Mês)
     unique_dates = df_agg[['YEAR', 'MONTH']].drop_duplicates()
     holiday_map = {}
     
     print("Calculando feriados chineses para o histórico...")
     for _, row in unique_dates.iterrows():
         y, m = int(row['YEAR']), int(row['MONTH'])
-        # Instancia feriados da China para o ano específico
         cn_holidays = holidays.China(years=y)
-        # Conta quantos caem neste mês
         count = sum(1 for date in cn_holidays if date.month == m)
         holiday_map[(y, m)] = count
     
-    # Aplicar o mapa ao dataframe
     df_agg['chinese_holidays_count'] = df_agg.set_index(['YEAR', 'MONTH']).index.map(holiday_map)
 
-    # trend feature (sequence from low to high)
     df_agg['month_of_sequence'] = df_agg.groupby(['COD_MTE_COMP'])['DATE_MONTH'].rank(method='dense')
     df_agg['month_of_sequence'] = df_agg['month_of_sequence'].astype(np.int64)
     
-    # lag features
     for lag in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]:
         df_agg[f"lag_{lag}"] = df_agg.groupby("COD_MTE_COMP")["QTDE_PEDIDA"].shift(lag)
     
-    # difference with previous record 
     for diff in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]:
         df_agg[f"diff_{diff}"] = df_agg.groupby("COD_MTE_COMP")["QTDE_PEDIDA"].diff(diff)
     
-    # rolling statistics (com shift para evitar leakage)
     for roll in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]:
         shifted_series = df_agg.groupby("COD_MTE_COMP")["QTDE_PEDIDA"].shift(1)
         
@@ -839,27 +542,22 @@ def create_train_dataset(df_agg):
         df_agg[f"roll_min_{roll}"] = (shifted_series.rolling(roll, min_periods=1).min().reset_index(level=0, drop=True))
         df_agg[f"roll_max_{roll}"] = (shifted_series.rolling(roll, min_periods=1).max().reset_index(level=0, drop=True))
     
-    # Encoding categorical features
     rev_type_series = df_agg['COD_MTE_COMP']
     df_agg = pd.get_dummies(df_agg, columns=['COD_MTE_COMP'])
     df_agg['COD_MTE_COMP'] = rev_type_series
     
-    # back fill the missing values separately for each revenue type
     df_agg = df_agg.groupby('COD_MTE_COMP').apply(lambda group: group.bfill()).reset_index(drop=True)
     
-    # Target: sales next month
     horizons = [1]
     for horizon in horizons:
         df_agg[f"sales_next_{horizon}_month"] = df_agg.groupby("COD_MTE_COMP")["QTDE_PEDIDA"].shift(-horizon, fill_value=np.nan)
     
-    # Carnival flag
     df_agg['is_next_month_carnival'] = np.where(df_agg['MONTH'] == 2, 1, 0)
     
     return df_agg
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 def create_future_dataset(df_agg):
-    # generate the future dataframe 
     future_period = 12
     future_date = df_agg['DATE_MONTH'] + pd.DateOffset(months=future_period)
     future_date = future_date[-future_period:]
@@ -880,14 +578,7 @@ def create_future_dataset(df_agg):
     return df_future
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# ==================================================================================
-# ESCOLHER MÉTODO DE TREINAMENTO
-# ==================================================================================
-
-# OPÇÃO 1: Usar classificação ABC-XYZ pré-existente (primeiro script)
-USE_EXISTING_ABC_XYZ = False  # Mude para True se quiser usar coluna ABC_XYZ existente
-
-# OPÇÃO 2: Usar classificação ABC-Pareto dinâmica (segundo script - RECOMENDADO)
+USE_EXISTING_ABC_XYZ = False
 USE_ABC_PARETO = True
 
 if USE_ABC_PARETO and USE_EXISTING_ABC_XYZ:
@@ -902,24 +593,19 @@ if USE_ABC_PARETO:
     print("    - Classes definidas por volume acumulado (80-95-100%)")
     print()
     
-    # Preparar dataset completo com features
     df_train_full = create_train_dataset(df_agg_abcxyz.drop(columns=['ABC_XYZ']))
     
-    # Split treino/teste (últimos 3 meses para teste)
     n_months_test = 3
     split_point = df_train_full['DATE_MONTH'].max() - pd.DateOffset(months=n_months_test)
     
     df_train_processed = df_train_full[df_train_full['DATE_MONTH'] < split_point].copy()
     df_test_processed = df_train_full[df_train_full['DATE_MONTH'] >= split_point].copy()
     
-    # Verificar nome da coluna target
     target_col = 'sales_next_1_month' if 'sales_next_1_month' in df_train_processed.columns else 'sales_next_month'
     
-    # Remover colunas não-feature
     non_feature_cols = ['DATE_MONTH', 'COD_MTE_COMP', target_col]
     features = [col for col in df_train_processed.columns if col not in non_feature_cols]
     
-    # Grid de hiperparâmetros
     grid_A = {
         "n_estimators": [300, 500],
         "max_depth": [4, 5, 6],                
@@ -953,7 +639,6 @@ if USE_ABC_PARETO:
     
     user_param_grid = {'A': grid_A, 'B': grid_B, 'C': grid_C}
     
-    # Treinar modelos ABC-Pareto
     model_dict, y_train, y_pred_train, y_test, y_pred_test = train_abc_models(
         df_train_processed,
         df_test_processed,
@@ -967,7 +652,6 @@ elif USE_EXISTING_ABC_XYZ:
     print("    - Usando coluna 'ABC_XYZ' do dataset sku_abc_xyz")
     print()
     
-    # Treinar um modelo para cada cluster ABC-XYZ
     model_dict = {}
     
     for cluster in df_agg_abcxyz['ABC_XYZ'].unique():
@@ -977,20 +661,15 @@ elif USE_EXISTING_ABC_XYZ:
         
         df_train_cluster = create_train_dataset(df_cluster_copy)
         
-        # Drop last month rows without target
         df_train_cluster = df_train_cluster[df_train_cluster['sales_next_1_month'].notna()]
         
-        # Remove non-feature columns
         non_feature_cols = ['DATE_MONTH','COD_MTE_COMP', 'sales_next_1_month']
         
-        # Train data
         X_train = df_train_cluster.drop(non_feature_cols, axis=1)
         y_train = df_train_cluster['sales_next_1_month']
         
-        # Guardar lista de features
         feature_names = X_train.columns.tolist()
         
-        # Fit model
         model = xgb.XGBRegressor(objective='reg:squarederror', n_estimators=500, max_depth=10, learning_rate=0.03)
         model.fit(X_train, y_train)
         
@@ -1009,24 +688,16 @@ print("✅ TREINAMENTO CONCLUÍDO")
 print("="*80)
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# ==================================================================================
-# FUNÇÃO: get_features
-# ==================================================================================
-
 def get_features(df_agg, cutoff_date):
     """
     Gera features para um cutoff_date específico.
-    Inclui cálculo dinâmico de Feriados Chineses com conversão segura de data.
     """
     df_agg_v1 = df_agg.copy()
     target_col = 'sales_next_1_month'
     
-    # date time feature 
     df_agg_v1['YEAR'] = df_agg_v1['DATE_MONTH'].dt.year
     df_agg_v1['MONTH'] = df_agg_v1['DATE_MONTH'].dt.month
     
-    # --- CORREÇÃO AQUI: Converter numpy.datetime64 para pd.Timestamp ---
-    # Garante que temos acesso a .year e .month independentemente do formato de entrada
     cutoff_ts = pd.to_datetime(cutoff_date)
     
     y = cutoff_ts.year
@@ -1035,23 +706,17 @@ def get_features(df_agg, cutoff_date):
     cn_holidays = holidays.China(years=y)
     cn_count = sum(1 for date in cn_holidays if date.month == m)
     
-    # Atribui o valor para todas as linhas
     df_agg_v1['chinese_holidays_count'] = cn_count
-    # --------------------------------------------------------------
     
-    # trend feature
     df_agg_v1['month_of_sequence'] = df_agg_v1.groupby(['COD_MTE_COMP'])['DATE_MONTH'].rank(method='dense')
     df_agg_v1['month_of_sequence'] = df_agg_v1['month_of_sequence'].astype(np.int64)
     
-    # lag features
     for lag in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]:
         df_agg_v1[f"lag_{lag}"] = df_agg_v1.groupby("COD_MTE_COMP")["QTDE_PEDIDA"].shift(lag)
     
-    # diff features
     for diff in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]:
         df_agg_v1[f"diff_{diff}"] = df_agg_v1.groupby("COD_MTE_COMP")["QTDE_PEDIDA"].diff(diff)
 
-    # rolling features
     for roll in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]:
         shifted_series = df_agg_v1.groupby("COD_MTE_COMP")["QTDE_PEDIDA"].shift(1)
         
@@ -1060,53 +725,30 @@ def get_features(df_agg, cutoff_date):
         df_agg_v1[f"roll_min_{roll}"] = (shifted_series.rolling(roll, min_periods=1).min().reset_index(level=0, drop=True))
         df_agg_v1[f"roll_max_{roll}"] = (shifted_series.rolling(roll, min_periods=1).max().reset_index(level=0, drop=True))
     
-    # one hot encoding
     rev_type_series = df_agg_v1['COD_MTE_COMP']
     df_agg_v1 = pd.get_dummies(df_agg_v1, columns=['COD_MTE_COMP'])
     df_agg_v1['COD_MTE_COMP'] = rev_type_series    
     
-    # back fill 
     df_agg_v1 = df_agg_v1.groupby('COD_MTE_COMP').apply(lambda group: group.bfill())
     
-    # Filter for cutoff date
-    # Nota: pd.to_datetime ajuda a garantir que a comparação funcione mesmo se os tipos diferirem ligeiramente
     df_agg_v1 = df_agg_v1[df_agg_v1['DATE_MONTH'] == cutoff_ts]
     df_agg_v1[target_col] = None
     
-    # Carnival flag
     df_agg_v1['is_next_month_carnival'] = np.where(df_agg_v1['MONTH'] == 2, 1, 0)
     
     return df_agg_v1
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# ==================================================================================
-# FUNÇÃO: recursive_prediction (ADAPTADA PARA AMBOS OS MÉTODOS)
-# ==================================================================================
-
 def recursive_prediction(df_agg, df_future, model_dict, use_abc_xyz_column=False):
     """
     Previsão recursiva usando predict_ensemble
-    
-    Parameters:
-    -----------
-    df_agg : DataFrame
-        Dados históricos agregados
-    df_future : DataFrame
-        Dataframe com períodos futuros
-    model_dict : dict
-        Dicionário de modelos (formato ABC-Pareto ou ABC-XYZ)
-    use_abc_xyz_column : bool
-        Se True, usa coluna ABC_XYZ existente. Se False, usa product_class_map
     """
     target_col = 'sales_next_1_month'
     non_feature_cols = ['DATE_MONTH', 'COD_MTE_COMP', target_col]
     
-    # Dataframe to predict next month
     df_test_next_1_month = df_agg[df_agg['sales_next_1_month'].isna()].copy()
     
-    # Adicionar classificação se necessário
     if use_abc_xyz_column and 'ABC_XYZ' not in df_test_next_1_month.columns:
-        # Merge com ABC_XYZ original se estiver usando essa abordagem
         df_test_next_1_month = pd.merge(
             df_test_next_1_month, 
             df_agg_abcxyz[['COD_MTE_COMP', 'ABC_XYZ']].drop_duplicates(), 
@@ -1114,35 +756,27 @@ def recursive_prediction(df_agg, df_future, model_dict, use_abc_xyz_column=False
             how='left'
         )
     
-    # Usar predict_ensemble (detecta automaticamente o tipo de modelo)
     y_pred = predict_ensemble(model_dict, df_test_next_1_month)
     
-    # Recursive prediction for next 12 months
     df_future = df_future.sort_values(by=['DATE_MONTH','COD_MTE_COMP']).reset_index(drop=True)
     future_date_list = df_future['DATE_MONTH'].unique()
     
-    # Dataframe with all present data with features
     df_agg_future = df_agg[['DATE_MONTH', 'COD_MTE_COMP', 'QTDE_PEDIDA']].copy()
     
-    # Prediction for next month missing in dataframe above
     this_y_pred = y_pred.copy()
     
     for i in range(len(future_date_list)):
         print(f"Predicting for period: {future_date_list[i]}")
         
-        # attribute prediction in the end of last iteration to current period to be predicted
         this_df_future = df_future[df_future['DATE_MONTH'] == future_date_list[i]].copy()
         this_df_future['QTDE_PEDIDA'] = this_y_pred
         this_df_future['QTDE_PEDIDA'] = np.where(this_df_future['QTDE_PEDIDA'] <= 0, 0, this_df_future['QTDE_PEDIDA'])
         
-        # merge the current month with all previous months
         df_agg_future = pd.concat([df_agg_future, this_df_future])
         df_agg_future = df_agg_future.sort_values(by=['COD_MTE_COMP', 'DATE_MONTH']).reset_index(drop=True)
         
-        # feature engineering with the merged data
         this_df_future_w_feature = get_features(df_agg_future, future_date_list[i])
         
-        # Adicionar classificação se necessário
         if use_abc_xyz_column and 'ABC_XYZ' not in this_df_future_w_feature.columns:
             this_df_future_w_feature = pd.merge(
                 this_df_future_w_feature, 
@@ -1151,16 +785,11 @@ def recursive_prediction(df_agg, df_future, model_dict, use_abc_xyz_column=False
                 how='left'
             )
         
-        # Usar predict_ensemble
         this_y_pred = predict_ensemble(model_dict, this_df_future_w_feature)
     
     return df_agg_future
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# ==================================================================================
-# LOOP DE PREVISÃO POR CLUSTER/CLASSE
-# ==================================================================================
-
 df_all_predictions = pd.DataFrame()
 
 print("="*80)
@@ -1168,7 +797,6 @@ print("🚀 GERANDO PREVISÕES RECURSIVAS")
 print("="*80)
 
 if USE_ABC_PARETO:
-    # Para método ABC-Pareto, processar todos os produtos de uma vez
     print("\n📊 Usando modelo ABC-Pareto unificado...")
     
     df_fe = df_agg_abcxyz.drop(columns=['ABC_XYZ'] if 'ABC_XYZ' in df_agg_abcxyz.columns else [])
@@ -1181,7 +809,6 @@ if USE_ABC_PARETO:
     print(f"✅ Previsões geradas: {len(df_all_predictions)} registros")
     
 elif USE_EXISTING_ABC_XYZ:
-    # Para método ABC-XYZ, processar cada cluster separadamente
     for cluster in df_agg_abcxyz['ABC_XYZ'].unique():
         print(f"\n🔮 Gerando previsões para cluster: {cluster}")
         df_fe_cluster = df_agg_abcxyz[df_agg_abcxyz['ABC_XYZ']==cluster].copy()
@@ -1190,10 +817,8 @@ elif USE_EXISTING_ABC_XYZ:
         df_train_cluster = create_train_dataset(df_fe_cluster)
         df_future_cluster = create_future_dataset(df_train_cluster)
         
-        # Usar predict_ensemble via recursive_prediction
         df_cluster_predictions = recursive_prediction(df_train_cluster, df_future_cluster, model_dict, use_abc_xyz_column=True)
         
-        # merge dataframes to get one final dataframe with all clusters
         df_all_predictions = pd.concat([df_all_predictions, df_cluster_predictions])
         
         print(f"✅ Previsões geradas para cluster {cluster}: {len(df_cluster_predictions)} registros")
@@ -1203,38 +828,26 @@ print("✅ TODAS AS PREVISÕES CONCLUÍDAS")
 print("="*80)
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Create dataframe equal to original one
 df_multi_horizon_pred = df_all_predictions.copy()
-
 df_multi_horizon_pred.rename(columns={'DATE_MONTH': 'DATA_PEDIDO'}, inplace=True)
-
-df_multi_horizon_pred['_next_month'] = df_multi_horizon_pred['DATA_PEDIDO'] + pd.DateOffset(months=1)
 df_multi_horizon_pred['base_date'] = df_agg_abcxyz['DATE_MONTH'].max()
-# df_multi_horizon_pred = df_multi_horizon_pred[df_multi_horizon_pred['DATA_PEDIDO']>df_multi_horizon_pred['base_date']]
 
-# ============================================================================
-# ADICIONAR CLASSIFICAÇÕES ABC, XYZ E ABC-XYZ AOS PRODUTOS
-# ============================================================================
+# Adicionar classificações ABC-XYZ aos PRODUTOS primeiro
 if USE_ABC_PARETO and 'product_class_map' in model_dict:
     print("\n📊 Adicionando classificações ABC-XYZ aos produtos...")
     
-    # Criar mapeamentos
     product_class_map = model_dict['product_class_map']
     product_xyz_map = model_dict.get('product_xyz_map', {})
     product_abc_xyz_map = model_dict.get('product_abc_xyz_map', {})
     
-    # Adicionar classificações
     df_multi_horizon_pred['classe_abc'] = df_multi_horizon_pred['COD_MTE_COMP'].map(product_class_map).fillna('C')
     df_multi_horizon_pred['classe_xyz'] = df_multi_horizon_pred['COD_MTE_COMP'].map(product_xyz_map).fillna('Z')
     df_multi_horizon_pred['classe_abc_xyz'] = df_multi_horizon_pred['COD_MTE_COMP'].map(product_abc_xyz_map).fillna('CZ')
     
-    print(f"   ✅ Classificações adicionadas:")
-    print(f"      ABC: {df_multi_horizon_pred['classe_abc'].value_counts().to_dict()}")
-    print(f"      XYZ: {df_multi_horizon_pred['classe_xyz'].value_counts().to_dict()}")
-    print(f"      Top 5 ABC-XYZ: {df_multi_horizon_pred['classe_abc_xyz'].value_counts().head(5).to_dict()}")
+    print(f"   ✅ Classificações adicionadas")
+    
 elif USE_EXISTING_ABC_XYZ:
     print("\n📊 Usando classificação ABC-XYZ original...")
-    # Merge com classificação original
     df_multi_horizon_pred = pd.merge(
         df_multi_horizon_pred,
         df_agg_abcxyz[['COD_MTE_COMP', 'ABC_XYZ']].drop_duplicates(),
@@ -1242,9 +855,6 @@ elif USE_EXISTING_ABC_XYZ:
         how='left'
     )
     df_multi_horizon_pred['ABC_XYZ'] = df_multi_horizon_pred['ABC_XYZ'].fillna('CZ')
-
-# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-df_multi_horizon_pred
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 def get_product_componentes(end_prod_cod, df_estrutura):
@@ -1264,20 +874,38 @@ def create_component_consumption_dataframe(df,
                                            other_columns_to_keep = []):
     '''Takes a dataframe with end product sales for each product and month and returns a dataframe with the consumptions for each component for each month'''
     df_components = pd.DataFrame()
+    
+    # Filtrar apenas colunas necessárias (SEM classificações no groupby)
+    base_columns_needed = [period_column, sales_column]
+    
+    # Se base_date está em other_columns_to_keep, adicionar
+    if 'base_date' in other_columns_to_keep:
+        base_columns_needed.append('base_date')
+    
     for end_prod_cod in df[code_column].unique():
         dict_components = get_product_componentes(end_prod_cod, df_estrutura)
-        # each row that is in the end product dataframe becomes one or more rows in the components dataframe
         for component_cod, component_quantity in dict_components.items():
             new_row = pd.DataFrame()
-            new_row = df[df[code_column] == end_prod_cod].copy()[[period_column, sales_column]+other_columns_to_keep]
+            new_row = df[df[code_column] == end_prod_cod].copy()[base_columns_needed]
             new_row["Component"] = component_cod
             new_row[consumption_column] = new_row[sales_column] * component_quantity
             df_components = pd.concat([df_components, new_row], axis=0)
+    
     df_components = df_components.drop(columns=[sales_column])
-    df_components = df_components.groupby([period_column, "Component"]+other_columns_to_keep)[consumption_column].sum().reset_index()
+    
+    # CORREÇÃO CRÍTICA: Groupby APENAS por período e componente (sem classificações)
+    groupby_cols = [period_column, "Component"]
+    if 'base_date' in df_components.columns:
+        groupby_cols.append('base_date')
+    
+    df_components = df_components.groupby(groupby_cols)[consumption_column].sum().reset_index()
+    
     return df_components
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
+# Apenas base_date é necessário no groupby
+other_columns_to_keep = ['base_date']
+
 df_multi_horizon_pred_component = create_component_consumption_dataframe(
     df_multi_horizon_pred,
     df_estrutura,
@@ -1285,14 +913,15 @@ df_multi_horizon_pred_component = create_component_consumption_dataframe(
     "consumption_predicted_month",
     code_column='COD_MTE_COMP',
     period_column='DATA_PEDIDO',
+    other_columns_to_keep=other_columns_to_keep
 )
-df_multi_horizon_pred_component['base_date'] = df_multi_horizon_pred_component['DATA_PEDIDO'].min() - pd.DateOffset(months=1)
 
-# ============================================================================
-# ADICIONAR CLASSIFICAÇÕES ABC-XYZ AOS COMPONENTES
-# ============================================================================
+# Agora adicionar classificações APÓS a agregação (1 classificação por componente)
 if USE_ABC_PARETO and 'product_class_map' in model_dict:
     print("\n📊 Adicionando classificações ABC-XYZ aos componentes...")
+    
+    product_class_map = model_dict['product_class_map']
+    product_xyz_map = model_dict.get('product_xyz_map', {})
     
     # Criar mapeamento de componente -> produtos que o utilizam
     component_to_products = {}
@@ -1304,54 +933,60 @@ if USE_ABC_PARETO and 'product_class_map' in model_dict:
             component_to_products[componente] = []
         component_to_products[componente].append(produto)
     
-    # Para cada componente, usar a classificação do produto mais importante que o usa
-    def get_component_classification(componente, product_map):
+    def get_best_classification(componente, product_map, priority_order):
+        """
+        Retorna a MELHOR classificação entre os produtos que usam o componente.
+        Prioriza: A > B > C (para ABC) e X > Y > Z (para XYZ)
+        """
         if componente not in component_to_products:
-            return None
+            return priority_order[-1]  # Retorna pior classe se não encontrado
         
         produtos = component_to_products[componente]
-        # Usar a melhor classificação entre os produtos (A > B > C)
         classes = [product_map.get(p) for p in produtos if p in product_map]
+        
         if not classes:
-            return None
+            return priority_order[-1]
         
-        # Priorizar A, depois B, depois C
-        if 'A' in classes:
-            return 'A'
-        elif 'B' in classes:
-            return 'B'
-        else:
-            return 'C'
-    
-    def get_component_xyz(componente, xyz_map):
-        if componente not in component_to_products:
-            return None
+        # Retornar primeira classe na ordem de prioridade
+        for priority_class in priority_order:
+            if priority_class in classes:
+                return priority_class
         
-        produtos = component_to_products[componente]
-        # Usar a melhor classificação entre os produtos (X > Y > Z)
-        classes = [xyz_map.get(p) for p in produtos if p in xyz_map]
-        if not classes:
-            return None
-        
-        # Priorizar X, depois Y, depois Z
-        if 'X' in classes:
-            return 'X'
-        elif 'Y' in classes:
-            return 'Y'
-        else:
-            return 'Z'
+        return priority_order[-1]
     
-    component_abc_map = {comp: get_component_classification(comp, product_class_map) for comp in df_multi_horizon_pred_component['Component'].unique()}
-    component_xyz_map = {comp: get_component_xyz(comp, product_xyz_map) for comp in df_multi_horizon_pred_component['Component'].unique()}
+    # Criar mapeamento único de componente -> classificação
+    component_abc_map = {
+        comp: get_best_classification(comp, product_class_map, ['A', 'B', 'C'])
+        for comp in df_multi_horizon_pred_component['Component'].unique()
+    }
     
-    df_multi_horizon_pred_component['classe_abc'] = df_multi_horizon_pred_component['Component'].map(component_abc_map).fillna('C')
-    df_multi_horizon_pred_component['classe_xyz'] = df_multi_horizon_pred_component['Component'].map(component_xyz_map).fillna('Z')
+    component_xyz_map = {
+        comp: get_best_classification(comp, product_xyz_map, ['X', 'Y', 'Z'])
+        for comp in df_multi_horizon_pred_component['Component'].unique()
+    }
+    
+    # Adicionar classificações (UMA por componente)
+    df_multi_horizon_pred_component['classe_abc'] = df_multi_horizon_pred_component['Component'].map(component_abc_map)
+    df_multi_horizon_pred_component['classe_xyz'] = df_multi_horizon_pred_component['Component'].map(component_xyz_map)
     df_multi_horizon_pred_component['classe_abc_xyz'] = df_multi_horizon_pred_component['classe_abc'] + df_multi_horizon_pred_component['classe_xyz']
     
-    print(f"   ✅ Classificações adicionadas aos componentes:")
-    print(f"      ABC: {df_multi_horizon_pred_component['classe_abc'].value_counts().to_dict()}")
-    print(f"      XYZ: {df_multi_horizon_pred_component['classe_xyz'].value_counts().to_dict()}")
-    print(f"      Top 5 ABC-XYZ: {df_multi_horizon_pred_component['classe_abc_xyz'].value_counts().head(5).to_dict()}")
+    print(f"   ✅ Classificações únicas adicionadas aos componentes")
+    print(f"   Total de componentes: {df_multi_horizon_pred_component['Component'].nunique()}")
+    print(f"   Linhas totais: {len(df_multi_horizon_pred_component)}")
+    
+elif USE_EXISTING_ABC_XYZ:
+    print("\n📊 Usando classificação ABC-XYZ original para componentes...")
+    # Para ABC-XYZ existente, usar a mesma lógica de herdar do melhor produto
+    df_multi_horizon_pred_component = pd.merge(
+        df_multi_horizon_pred_component,
+        df_agg_abcxyz[['COD_MTE_COMP', 'ABC_XYZ']].drop_duplicates(),
+        left_on='Component',
+        right_on='COD_MTE_COMP',
+        how='left'
+    )
+    df_multi_horizon_pred_component['ABC_XYZ'] = df_multi_horizon_pred_component['ABC_XYZ'].fillna('CZ')
+    if 'COD_MTE_COMP' in df_multi_horizon_pred_component.columns:
+        df_multi_horizon_pred_component.drop(columns=['COD_MTE_COMP'], inplace=True)
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 df_multi_horizon_pred['QTDE_PEDIDA'] = np.ceil(df_multi_horizon_pred['QTDE_PEDIDA'])
@@ -1361,6 +996,25 @@ df_multi_horizon_pred_component['consumption_predicted_month'] = np.ceil(df_mult
 print("\n" + "="*80)
 print("💾 SALVANDO OUTPUTS")
 print("="*80)
+
+# VERIFICAÇÃO DE QUALIDADE: Checar duplicatas
+print("\n🔍 VERIFICAÇÃO DE QUALIDADE:")
+duplicatas_componentes = df_multi_horizon_pred_component.groupby(['DATA_PEDIDO', 'Component']).size()
+duplicatas_encontradas = duplicatas_componentes[duplicatas_componentes > 1]
+
+if len(duplicatas_encontradas) > 0:
+    print(f"   ⚠️ ATENÇÃO: {len(duplicatas_encontradas)} combinações (DATA_PEDIDO, Component) com duplicatas!")
+    print(f"   Exemplos:")
+    print(duplicatas_encontradas.head(5))
+else:
+    print(f"   ✅ Nenhuma duplicata encontrada!")
+    print(f"   Cada (DATA_PEDIDO, Component) tem exatamente 1 linha")
+
+print(f"\n📊 Estatísticas Finais:")
+print(f"   Componentes: {len(df_multi_horizon_pred_component)} linhas")
+print(f"   Componentes únicos: {df_multi_horizon_pred_component['Component'].nunique()}")
+print(f"   Datas únicas: {df_multi_horizon_pred_component['DATA_PEDIDO'].nunique()}")
+print(f"   Linhas esperadas: {df_multi_horizon_pred_component['Component'].nunique() * df_multi_horizon_pred_component['DATA_PEDIDO'].nunique()}")
 
 Helpers.save_output_dataset(context=context, output_name='new_multihorizon_products_abcxyz', data_frame=df_multi_horizon_pred)
 Helpers.save_output_dataset(context=context, output_name='new_multihorizon_components_abcxyz', data_frame=df_multi_horizon_pred_component)

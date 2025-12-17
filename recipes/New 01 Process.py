@@ -178,10 +178,6 @@ def create_component_consumption_dataframe(df,
                                            code_column="COD_MTE_COMP",
                                            period_column="_next_month",
                                            other_columns_to_keep=None):
-    """
-    Takes a dataframe with end product sales for each product and month, 
-    and returns a dataframe with the consumptions for each component for each month.
-    """
     if other_columns_to_keep is None:
         other_columns_to_keep = []
     
@@ -198,10 +194,16 @@ def create_component_consumption_dataframe(df,
     
     df_components = pd.concat(component_rows, axis=0)
     df_components = df_components.drop(columns=[sales_column])
-    df_components = df_components.groupby([period_column, "Component"] + other_columns_to_keep)[consumption_column].sum().reset_index()
+    
+    # MUDANÇA: Agregar TODAS as colunas numéricas
+    agg_dict = {consumption_column: 'sum'}
+    for col in other_columns_to_keep:
+        agg_dict[col] = 'sum'
+    
+    df_components = df_components.groupby([period_column, "Component"]).agg(agg_dict).reset_index()
     
     return df_components
-
+    
 def refresh_categories(df, column_name):
     df.loc[:, column_name] = df[column_name].cat.set_categories(df[column_name].cat.remove_unused_categories().unique())
     return df
@@ -578,20 +580,8 @@ COD_MTE_COMP = "COD_MTE_COMP"
 CODIGO_MTE_ORIG_EXP = "CODIGO_MTE_ORIG_EXP"
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Inicializa a lista de auditoria
-lista_dfs_sem_match = []
-
-# Preparação dos dados (mantida do original com auditoria)
-# 1. FILTRO RODAPÉ
-# Captura a linha que será removida
-row_tail = df_portalvendas.tail(1).copy()
-row_tail['motivo'] = 'Linha de rodape/invalida'
-# Normaliza nome da coluna para auditoria
-row_tail_audit = row_tail[[COD_MTE_COMP]].rename(columns={COD_MTE_COMP: 'Cod_component'})
-row_tail_audit['motivo'] = 'Linha de rodape/invalida'
-lista_dfs_sem_match.append(row_tail_audit)
-
-# Aplica remoção
+# Preparação dos dados
+# 1. FILTRO RODAPÉ - Remove linha inválida no final do arquivo
 df_portalvendas = df_portalvendas.drop(df_portalvendas.tail(1).index)
 
 # Sanitização de colunas
@@ -620,6 +610,7 @@ dict_columns_types = {
     "CODIGO_CLIENTE": "category",
     "COD_MTE_COMP": "category",
     "CODIGO_MTE_ORIG_EXP": "category",
+
 }
 
 df_portalvendas = df_portalvendas.astype(dict_columns_types)
@@ -635,16 +626,9 @@ if filter_last_2years:
     last_date = pd.to_datetime(pd.Timestamp.now().date())
     last_date_first_day_of_month = pd.Timestamp(f"{last_date.year}-{last_date.month:02d}-01")
     start_date = last_date_first_day_of_month - pd.DateOffset(years=2)
-    
-    # Auditoria
+
+    # Filtrar: remover histórico antigo (> 2 anos) e mês corrente incompleto
     mask_time_out = (df_portalvendas[DATA_PEDIDO] < start_date) | (df_portalvendas[DATA_PEDIDO] >= last_date_first_day_of_month)
-    if mask_time_out.sum() > 0:
-        df_removed_time = df_portalvendas[mask_time_out].copy()
-        df_audit_time = df_removed_time[[COD_MTE_COMP]].rename(columns={COD_MTE_COMP: 'Cod_component'})
-        df_audit_time['motivo'] = 'Fora da Janela Temporal (Historico antigo ou mes atual)'
-        lista_dfs_sem_match.append(df_audit_time)
-    
-    # Aplica filtro
     df_portalvendas = df_portalvendas[~mask_time_out]
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
@@ -865,44 +849,61 @@ def to_period(df, col, freq="M"):
     return df
 
 @log_step
-def fill_all_missing_periods(
-    df, 
-    date_column, 
-    product_column, 
-    freq="D", 
-    fill_dict=None
-):
+def fill_all_missing_periods(df, date_column, product_column, selected_cols=None, freq="D", fill_dict=None):
     """
-    Preenche períodos ausentes para cada produto entre min e max date.
+    Preenche datas ausentes para cada produto entre min e max date.
+    CORRIGIDA: Evita erro de broadcast (shapes mismatch) ao concatenar colunas.
+    """
     
-    fill_dict: dicionário no formato {coluna: método_ou_valor}
-        Exemplo: {"VALOR_UNITARIO": "ffill", "QTDE_PEDIDA": 0}
-    """
-    # generate date range for each product
+    # CORREÇÃO: Converter df.columns para lista Python
+    if selected_cols is None:
+        selected_cols = df.columns.tolist() 
+    else:
+        selected_cols = list(selected_cols)
+    
+    # Gerar range de datas base
     min_date = df[date_column].min()
     max_date = df[date_column].max()
     date_range = pd.date_range(min_date, max_date, freq=freq)
+    
+    # Lista de produtos únicos
     product_codes = df[product_column].unique().tolist()
+    
+    # Criar todas as combinações (Produto x Data)
     all_combinations = pd.MultiIndex.from_product(
-        [product_codes, date_range],
+        [product_codes, date_range], 
         names=[product_column, date_column]
     )
     new_df = pd.DataFrame(index=all_combinations).reset_index()
-
-    merged_df = pd.merge(new_df, df, on=[product_column, date_column], how="left")
-
+    
+    # Merge com os dados originais (Left Join mantém as datas vazias criadas)
+    merged_df = pd.merge(new_df, df, on=[product_column, date_column], how='left')
+    
+    # Aplicação do dicionário de preenchimento (fill_dict)
     if fill_dict:
-        for col, method in fill_dict.items():
-            if method in ["ffill", "bfill"]:
-                merged_df[col] = merged_df.groupby(product_column)[col].fillna(method=method)
+        for value, col in fill_dict.items():
+            if col not in merged_df.columns:
+                continue
+                
+            if value == "ffill":
+                merged_df[col] = merged_df.groupby(product_column)[col].ffill()
+            elif value == "bfill":
+                merged_df[col] = merged_df.groupby(product_column)[col].bfill()
             else:
-                merged_df[col] = merged_df[col].fillna(method)
-
-    # fill the remaining null values with 0
-    merged_df = merged_df.fillna(0)
-
-    return merged_df
-
+                merged_df[col] = merged_df[col].fillna(value)
+    
+    # Preencher colunas numéricas restantes com 0
+    non_categorical_cols = merged_df.select_dtypes(exclude=['category', 'object', 'datetime']).columns
+    merged_df[non_categorical_cols] = merged_df[non_categorical_cols].fillna(0)
+    
+    # DEFINIÇÃO SEGURA DAS COLUNAS FINAIS
+    full_cols_list = [product_column, date_column] + selected_cols
+    cols = list(dict.fromkeys(full_cols_list))
+    cols = [c for c in cols if c in merged_df.columns]
+    
+    return merged_df[cols].copy()
+ 
+    
 
 @log_step
 def create_features_from_price_raise_dates(df, df_raise_dates, date_col=None):
@@ -1353,8 +1354,10 @@ def count_working_days_in_month(year, month):
     mte_recess_2021_2022 = pd.date_range("2021-12-24", "2022-01-02").to_pydatetime().tolist()
     mte_recess_2022_2023 = pd.date_range("2022-12-24", "2023-01-01").to_pydatetime().tolist()
     mte_recess_2023_2024 = pd.date_range("2023-12-24", "2024-01-01").to_pydatetime().tolist()
-    
-    remove_dates =  holids + mte_recess_2019_2020 + mte_recess_2020_2021 + mte_recess_2021_2022 + mte_recess_2022_2023 + mte_recess_2023_2024
+    mte_recess_2024_2025 = pd.date_range("2024-12-24", "2025-01-01").to_pydatetime().tolist()
+    mte_recess_2025_2026 = pd.date_range("2025-12-24", "2026-01-01").to_pydatetime().tolist()
+
+    remove_dates =  holids + mte_recess_2019_2020 + mte_recess_2020_2021 + mte_recess_2021_2022 + mte_recess_2022_2023 + mte_recess_2023_2024 + mte_recess_2024_2025 + mte_recess_2025_2026
 
     dates = [date for date in dates if date not in remove_dates]
 
@@ -1445,17 +1448,10 @@ def pipeline(df, df_datas_reajustes, df_produtos, _drop_na=True):
     return df_processed
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# 3. FILTRO COMPONENTES IMPORTADOS
-mask_not_imported = ~df_portalvendas[COD_MTE_COMP].isin(set_products_use_imported)
-
-if mask_not_imported.sum() > 0:
-    df_removed_imp = df_portalvendas[mask_not_imported].copy()
-    df_audit_imp = df_removed_imp[[COD_MTE_COMP]].rename(columns={COD_MTE_COMP: 'Cod_component'})
-    df_audit_imp['motivo'] = 'Produto nao utiliza componentes importados (T)'
-    lista_dfs_sem_match.append(df_audit_imp)
-
 # Filtrar e preparar dados
-df_portalvendas_filtered = df_portalvendas[~mask_not_imported].copy()
+df_portalvendas_filtered = df_portalvendas[
+    df_portalvendas[COD_MTE_COMP].isin(set_products_use_imported)
+]
 
 df_portalvendas_filtered = refresh_categories(
     df_portalvendas_filtered, COD_MTE_COMP
@@ -1469,6 +1465,96 @@ _next_month = "_next_month"
 df_portalvendas_preprocessing[_next_month] = df_portalvendas_preprocessing[DATA_PEDIDO] + pd.tseries.offsets.MonthBegin()
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
+# Funções auxiliares para criar datasets diários e mensais
+def to_period(df, col, freq="M"):
+    df[col] =df[col].dt.to_period(freq=freq)
+    df[col] = df[col].dt.to_timestamp()
+    return df
+
+def group_by_aggregate(df, group_by, col_func_dict):
+    df = df.groupby(group_by).aggregate(col_func_dict)
+    df = df.reset_index()
+    return df
+
+def get_daily_portalvendas(df_portalvendas):
+    df_daily_portalvendas = df_portalvendas.copy()
+    df_daily_portalvendas = fill_all_missing_periods(
+        df_daily_portalvendas,
+        date_column=DATA_PEDIDO,
+        product_column=COD_MTE_COMP,
+        selected_cols = [ 'QTDE_PEDIDA', 'QTDE_SALDO', 'QTDE_ENTREGUE', VALOR_UNITARIO, VALOR_FATURADO, VALOR_SALDO, VALOR_PEDIDO],
+        freq="D",
+        fill_dict={"ffill": VALOR_UNITARIO}
+    )
+    return df_daily_portalvendas
+
+def get_monthly_portalvendas(df_portalvendas):
+    df_monthly_portalvendas = to_period(
+        df_portalvendas, DATA_PEDIDO, freq="M"
+    )
+    
+    agg_columns = { QTDE_PEDIDA: 'sum',
+                   "QTDE_SALDO": 'sum',
+                   "QTDE_ENTREGUE": 'sum',
+                   VALOR_FATURADO: 'sum',
+                   VALOR_SALDO: 'sum',
+                   VALOR_PEDIDO: 'sum' }
+    
+    df_monthly_portalvendas = group_by_aggregate(
+        df_monthly_portalvendas,
+        [COD_MTE_COMP, DATA_PEDIDO],
+        agg_columns,
+    )
+    
+    df_monthly_portalvendas = df_monthly_portalvendas.rename(
+        columns={DATA_PEDIDO: "MONTH"}
+    )
+    
+    return df_monthly_portalvendas
+
+# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
+# Criar datasets diários e mensais
+print("Criando datasets diários e mensais...")
+
+df_daily_portalvendas = get_daily_portalvendas(df_portalvendas_filtered)
+df_monthly_portalvendas = get_monthly_portalvendas(df_daily_portalvendas)
+
+print(f"✅ Daily: {df_daily_portalvendas.shape}")
+print(f"✅ Monthly: {df_monthly_portalvendas.shape}")
+
+# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
+# Traduzir para componentes
+print("Traduzindo para componentes...")
+
+df_daily_portalvendas_components = create_component_consumption_dataframe(
+    df_daily_portalvendas,
+    df_estrutura,
+    sales_column=QTDE_PEDIDA,
+    consumption_column="Consumption",
+    code_column=COD_MTE_COMP,
+    period_column=DATA_PEDIDO,
+    other_columns_to_keep = ['QTDE_SALDO', 'QTDE_ENTREGUE',
+    'VALOR_FATURADO', 'VALOR_SALDO', 'VALOR_PEDIDO']
+)
+
+df_monthly_portalvendas_components = create_component_consumption_dataframe(
+    df_monthly_portalvendas,
+    df_estrutura,
+    sales_column=QTDE_PEDIDA,
+    consumption_column="Consumption",
+    code_column=COD_MTE_COMP,
+    period_column="MONTH",
+    other_columns_to_keep = ['QTDE_SALDO', 'QTDE_ENTREGUE',
+    'VALOR_FATURADO', 'VALOR_SALDO', 'VALOR_PEDIDO']
+)
+
+print(f"✅ Daily Components: {df_daily_portalvendas_components.shape}")
+print(f"✅ Monthly Components: {df_monthly_portalvendas_components.shape}")
+
+Helpers.save_output_dataset(context=context, output_name="new_daily_portalvendas_components", data_frame=df_daily_portalvendas_components)
+Helpers.save_output_dataset(context=context, output_name="new_monthly_portalvendas_components", data_frame=df_monthly_portalvendas_components)
+
+# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # Executar pipeline de processamento
 df_processed = pipeline(df_portalvendas_preprocessing, df_datas_reajustes, df_produtos)
 
@@ -1476,44 +1562,9 @@ print(f"DataFrame processado: {df_processed.shape}")
 print(f"Período: {df_processed[_next_month].min()} até {df_processed[_next_month].max()}")
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Removendo itens sem venda
-# 4. FILTRO CURVA D (Sem Venda/Baixa relevância)
-# Executar pipeline de processamento (mantido igual)
-df_processed = pipeline(df_portalvendas_preprocessing, df_datas_reajustes, df_produtos)
-
-print(f"DataFrame processado: {df_processed.shape}")
-print(f"Período: {df_processed[_next_month].min()} até {df_processed[_next_month].max()}")
-
-# Auditoria Curva D
-mask_curva_d = df_processed['CURVA_D'] == 1
-if mask_curva_d.sum() > 0:
-    df_removed_curva = df_processed[mask_curva_d].copy()
-    # Nota: df_processed tem COD_MTE_COMP
-    df_audit_curva = df_removed_curva[[COD_MTE_COMP]].rename(columns={COD_MTE_COMP: 'Cod_component'})
-    df_audit_curva['motivo'] = 'Curva D (Baixa relevancia/Sem venda)'
-    lista_dfs_sem_match.append(df_audit_curva)
-
-# Removendo itens sem venda
-df_processed = df_processed[~mask_curva_d]
+# Removendo itens sem venda (Curva D - componentes sem histórico de vendas)
+df_processed = df_processed[df_processed['CURVA_D'] != 1]
 df_processed = df_processed.drop(columns=['CURVA_D'])
-
-# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# CONSOLIDAÇÃO DO DATAFRAME DE AUDITORIA (df_sem_match)
-
-if len(lista_dfs_sem_match) > 0:
-    df_sem_match = pd.concat(lista_dfs_sem_match, ignore_index=True)
-else:
-    df_sem_match = pd.DataFrame(columns=['Cod_component', 'motivo'])
-
-# Adicionar coluna de origem fixa
-df_sem_match['origem'] = 'portal_vendas (script: New 01 Process)'
-
-# Garantir a ordem das colunas solicitada
-df_sem_match = df_sem_match[['Cod_component', 'origem', 'motivo']]
-Helpers.save_output_dataset(context=context, output_name='df_sem_match_atual_3', data_frame=df_sem_match)
-
-# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-df_sem_match
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # Split treino/teste
@@ -2201,32 +2252,32 @@ print("\n" + "="*80)
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # 6. VISUALIZAÇÃO RÁPIDA
-print("\n" + "="*80)
-print("📊 VISUALIZAÇÃO: TOP 5 COMPONENTES (Modelo vs. Baseline)")
-print("="*80)
+# print("\n" + "="*80)
+# print("📊 VISUALIZAÇÃO: TOP 5 COMPONENTES (Modelo vs. Baseline)")
+# print("="*80)
 
 # Top 5 componentes por volume
-top_5_components = df_predictions_components.groupby('componente')['observado'].sum().nlargest(5).index
+# top_5_components = df_predictions_components.groupby('componente')['observado'].sum().nlargest(5).index
 
-for comp in top_5_components:
-    df_comp = df_predictions_components[df_predictions_components['componente'] == comp]
+# for comp in top_5_components:
+#     df_comp = df_predictions_components[df_predictions_components['componente'] == comp]
     
-    # <<< MODIFICADO: Calcular métricas para Modelo e Baseline >>>
-    # Modelo
-    mae_model = mean_absolute_error(df_comp['observado'], df_comp['predito_model'])
-    wmape_model = wmape(df_comp['observado'].values, df_comp['predito_model'].values)
+#     # <<< MODIFICADO: Calcular métricas para Modelo e Baseline >>>
+#     # Modelo
+#     mae_model = mean_absolute_error(df_comp['observado'], df_comp['predito_model'])
+#     wmape_model = wmape(df_comp['observado'].values, df_comp['predito_model'].values)
     
-    # Baseline
-    mae_baseline = mean_absolute_error(df_comp['observado'], df_comp['predito_baseline'])
-    wmape_baseline = wmape(df_comp['observado'].values, df_comp['predito_baseline'].values)
+#     # Baseline
+#     mae_baseline = mean_absolute_error(df_comp['observado'], df_comp['predito_baseline'])
+#     wmape_baseline = wmape(df_comp['observado'].values, df_comp['predito_baseline'].values)
     
-    print(f"\n🔸 {comp}")
-    print(f"    Volume total: {df_comp['observado'].sum():,.0f}")
-    print(f"    MAE (Modelo):    {mae_model:.2f} | WMAPE (Modelo): {wmape_model:.2%}")
-    print(f"    MAE (Baseline): {mae_baseline:.2f} | WMAPE (Baseline): {wmape_baseline:.2%}")
-    print(f"    Meses: {df_comp['periodo'].nunique()}")
+#     print(f"\n🔸 {comp}")
+#     print(f"    Volume total: {df_comp['observado'].sum():,.0f}")
+#     print(f"    MAE (Modelo):    {mae_model:.2f} | WMAPE (Modelo): {wmape_model:.2%}")
+#     print(f"    MAE (Baseline): {mae_baseline:.2f} | WMAPE (Baseline): {wmape_baseline:.2%}")
+#     print(f"    Meses: {df_comp['periodo'].nunique()}")
 
-print("\n" + "="*80)
+# print("\n" + "="*80)
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # ==================================================================================
@@ -2378,11 +2429,6 @@ print("\n    ✅ monthly_analysis_components_comparative_mm12 salvo")
 
 print("\n" + "="*80)
 
-# Preparar datas base para previsão recursiva
-base_dates = [df_portalvendas_preprocessing[DATA_PEDIDO].max() - pd.tseries.offsets.DateOffset(months=i) - pd.offsets.MonthBegin() for i in range(0, 1)][::-1]
-
-print(f"Datas base para previsão: {base_dates}")
-
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 # Preparar datas base para previsão recursiva
 base_dates = [df_portalvendas_preprocessing[DATA_PEDIDO].max() - pd.tseries.offsets.DateOffset(months=i) - pd.offsets.MonthBegin() for i in range(0, 1)][::-1]
@@ -2454,7 +2500,7 @@ def recursive_prediction(df_in, model, n_months, base_month, df_datas_reajustes,
         print(f"    📅 Prevendo mês {n_predicted_months + 1}/{n_months}: {current_month}")
         
         # Manter apenas últimos 12 meses de histórico
-        # df_out = df_out[df_out[_next_month] >= base_month - pd.tseries.offsets.MonthBegin(12)]
+        df_out = df_out[df_out[_next_month] >= base_month - pd.tseries.offsets.MonthBegin(12)]
         
         # Processar dados (criar features)
         df_processed = processing_fn(df_out, df_datas_reajustes, df_produtos, _drop_na=False)
@@ -2498,7 +2544,7 @@ def recursive_prediction(df_in, model, n_months, base_month, df_datas_reajustes,
         n_predicted_months += 1
     
     # Retornar apenas previsões (não histórico)
-    # df_out = df_out[df_out[_next_month] > base_month + pd.tseries.offsets.MonthBegin()]
+    df_out = df_out[df_out[_next_month] > base_month + pd.tseries.offsets.MonthBegin()]
     
     print(f"\n✅ Previsão recursiva concluída: {len(df_out)} registros gerados")
     
@@ -2550,122 +2596,6 @@ print(f"    Produtos: {df_multi_horizon_pred.shape}")
 print(f"    Componentes: {df_multi_horizon_pred_component.shape}")
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Funções auxiliares para criar datasets diários e mensais
-def to_period(df, col, freq="M"):
-    df[col] =df[col].dt.to_period(freq=freq)
-    df[col] = df[col].dt.to_timestamp()
-    return df
-
-def group_by_aggregate(df, group_by, col_func_dict):
-    df = df.groupby(group_by).aggregate(col_func_dict)
-    df = df.reset_index()
-    return df
-
-def fill_all_missing_periods(df, date_column, product_column, selected_cols=None, freq="D", fill_dict=None):
-    if not selected_cols:
-        selected_cols = df.columns
-    
-    min_date = df[date_column].min()
-    max_date = df[date_column].max()
-    date_range = pd.date_range(min_date, max_date, freq=freq)
-    product_codes = df[product_column].unique().tolist()
-    all_combinations = pd.MultiIndex.from_product([product_codes, date_range], names=[product_column, date_column])
-    new_df = pd.DataFrame(index=all_combinations).reset_index()
-    
-    merged_df = pd.merge(new_df, df, on=[product_column, date_column], how='left')
-    
-    if fill_dict:
-        for value, col in fill_dict.items():
-            if value == "ffill":
-                merged_df[col] = merged_df.groupby(product_column)[col].fillna(method="ffill")
-            elif value == "bfill":
-                merged_df[col] = merged_df.groupby(product_column)[col].fillna(method="bfill")
-            else:
-                merged_df[col] = merged_df[col].fillna(value)
-    
-    non_categorical_cols = merged_df.select_dtypes(exclude=['category']).columns
-    merged_df[non_categorical_cols] = merged_df[non_categorical_cols].fillna(0)
-    
-    cols = [product_column, date_column] + selected_cols
-    
-    return merged_df[cols].copy()
-
-def get_daily_portalvendas(df_portalvendas):
-    df_daily_portalvendas = df_portalvendas.copy()
-    df_daily_portalvendas = fill_all_missing_periods(
-        df_daily_portalvendas,
-        date_column=DATA_PEDIDO,
-        product_column=COD_MTE_COMP,
-        selected_cols = [ 'QTDE_PEDIDA', 'QTDE_SALDO', 'QTDE_ENTREGUE', VALOR_UNITARIO, VALOR_FATURADO, VALOR_SALDO, VALOR_PEDIDO],
-        freq="D",
-        fill_dict={"ffill": VALOR_UNITARIO}
-    )
-    return df_daily_portalvendas
-
-def get_monthly_portalvendas(df_portalvendas):
-    df_monthly_portalvendas = to_period(
-        df_portalvendas, DATA_PEDIDO, freq="M"
-    )
-    
-    agg_columns = { QTDE_PEDIDA: 'sum',
-                   "QTDE_SALDO": 'sum',
-                   "QTDE_ENTREGUE": 'sum',
-                   VALOR_FATURADO: 'sum',
-                   VALOR_SALDO: 'sum',
-                   VALOR_PEDIDO: 'sum' }
-    
-    df_monthly_portalvendas = group_by_aggregate(
-        df_monthly_portalvendas,
-        [COD_MTE_COMP, DATA_PEDIDO],
-        agg_columns,
-    )
-    
-    df_monthly_portalvendas = df_monthly_portalvendas.rename(
-        columns={DATA_PEDIDO: "MONTH"}
-    )
-    
-    return df_monthly_portalvendas
-
-# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Criar datasets diários e mensais
-print("Criando datasets diários e mensais...")
-
-df_daily_portalvendas = get_daily_portalvendas(df_portalvendas_filtered)
-df_monthly_portalvendas = get_monthly_portalvendas(df_daily_portalvendas)
-
-print(f"✅ Daily: {df_daily_portalvendas.shape}")
-print(f"✅ Monthly: {df_monthly_portalvendas.shape}")
-
-# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-# Traduzir para componentes
-print("Traduzindo para componentes...")
-
-df_daily_portalvendas_components = create_component_consumption_dataframe(
-    df_daily_portalvendas,
-    df_estrutura,
-    sales_column=QTDE_PEDIDA,
-    consumption_column="Consumption",
-    code_column=COD_MTE_COMP,
-    period_column=DATA_PEDIDO,
-    other_columns_to_keep = ['QTDE_SALDO', 'QTDE_ENTREGUE',
-    'VALOR_FATURADO', 'VALOR_SALDO', 'VALOR_PEDIDO']
-)
-
-df_monthly_portalvendas_components = create_component_consumption_dataframe(
-    df_monthly_portalvendas,
-    df_estrutura,
-    sales_column=QTDE_PEDIDA,
-    consumption_column="Consumption",
-    code_column=COD_MTE_COMP,
-    period_column="MONTH",
-    other_columns_to_keep = ['QTDE_SALDO', 'QTDE_ENTREGUE',
-    'VALOR_FATURADO', 'VALOR_SALDO', 'VALOR_PEDIDO']
-)
-
-print(f"✅ Daily Components: {df_daily_portalvendas_components.shape}")
-print(f"✅ Monthly Components: {df_monthly_portalvendas_components.shape}")
-
-# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 print("\n" + "="*80)
 print("✅ PROCESSAMENTO COMPLETO!")
 print("="*80)
@@ -2687,7 +2617,5 @@ Helpers.save_output_dataset(context=context, output_name="new_daily_portalvendas
 Helpers.save_output_dataset(context=context, output_name="new_multihorizon_components", data_frame=df_multi_horizon_pred_component)
 Helpers.save_output_dataset(context=context, output_name="new_daily_portalvendas", data_frame=df_daily_portalvendas)
 Helpers.save_output_dataset(context=context, output_name="new_monthly_portalvendas", data_frame=df_monthly_portalvendas)
-Helpers.save_output_dataset(context=context, output_name="new_daily_portalvendas_components", data_frame=df_daily_portalvendas_components)
-Helpers.save_output_dataset(context=context, output_name="new_monthly_portalvendas_components", data_frame=df_monthly_portalvendas_components)
 
 print("✅ Todos os datasets foram salvos.")
